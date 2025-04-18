@@ -9,8 +9,10 @@ def clean_catalog(tmp_path, monkeypatch):
     """each test get a new catalog in a tmp dir"""
     cat_path = tmp_path / "cat.json"
     monkeypatch.setenv("RDBMS_CATALOG", str(cat_path))
-    yield
-    # file removed with tmp_path fixture
+    catalog = Catalog()
+    yield catalog 
+    # delete the catalog file after each test
+    catalog.reset()
 
 
 def test_create_and_list():
