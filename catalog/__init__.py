@@ -1,4 +1,4 @@
-from .metadata import Catalog, CatalogError, DuplicateTableError, UnknownTableError, IndexError_
+from .metadata import Catalog, CatalogError, DuplicateTableError, UnknownTableError, IndexError_, UnknownColumnError
 
 __all__ = [
     "Catalog",
@@ -6,4 +6,5 @@ __all__ = [
     "DuplicateTableError",
     "UnknownTableError",
     "IndexError_",
+    "UnknownColumnError",
 ]

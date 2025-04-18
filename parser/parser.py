@@ -1,6 +1,6 @@
 # parser.py
 from pyparsing import *
-from rdbms.catalog.metadata import Catalog, TableSchema, CatalogError, UnknownTableError, UnknownColumnError
+from catalog.metadata import Catalog, TableSchema, CatalogError, UnknownTableError, UnknownColumnError
 
 class SQLParser:
     def __init__(self, catalog: Catalog):
@@ -44,6 +44,13 @@ class SQLParser:
     def _build_condition_grammar(self):
         expr = Forward()
         comp_op = oneOf("= != < > <= >=")
+        
+        # mo: add column reference
+        column_ref = Group(
+            Optional(self.identifier + Suppress('.'))("table") + 
+            self.identifier("column")
+        )
+        
         atom = self.quoted_str | self.integer | column_ref
         condition = Group(atom + comp_op + atom)
         
