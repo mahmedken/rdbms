@@ -15,3 +15,8 @@ simplified RDBMS in python.
 - presists schema in memory between runs
 - enforces relational integrity constraints (pk, fk, unique naming)
 - ready for integration with the parser and execution engine
+
+### parser/
+- minimal, system catalog-integrated parser
+- recursive descent using pyparsing
+- uses catalog for schema validation, column resolution, and type checking
