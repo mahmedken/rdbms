@@ -1,1 +1,5 @@
 *env/
+*cache/
+*egg-info/
+*catalog.json
+
