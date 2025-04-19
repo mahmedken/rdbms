@@ -4,7 +4,7 @@ from catalog import Catalog
 
 app = Flask(__name__)
 
-# Initialize catalog and parser
+# initialize catalog and parser
 catalog = Catalog()
 parser = SQLParser(catalog)
 
@@ -15,7 +15,7 @@ def query():
     if request.method == 'POST':
         user_query = request.form.get('query')
         try:
-            # Parse the SQL query using your parser
+            # parse the SQL query using your parser
             parsed = parser.parse(user_query)
             result = f"Parse successful: {parsed}"
         except Exception as e:
