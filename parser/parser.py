@@ -1,10 +1,23 @@
 # parser.py
+
 from pyparsing import *
-from catalog.metadata import Catalog, TableSchema, CatalogError, UnknownTableError, UnknownColumnError
+from catalog import Catalog, TableSchema, CatalogError, UnknownTableError, UnknownColumnError
 
 class SQLParser:
     def __init__(self, catalog: Catalog):
         self.catalog = catalog
+
+
+        # identifiers and literals
+        self.identifier = Word(alphas, alphanums + '_')
+        self.quoted_str = QuotedString("'")
+        self.integer = Word(nums).setParseAction(lambda t: int(t[0]))
+
+        self.column_ref = Group(
+            Optional(self.identifier + Suppress('.'))("table") +
+            self.identifier("column")
+        )
+        
         
         # basic tokens
         self.LPAR, self.RPAR, self.COMMA = map(Suppress, "(),")
@@ -15,43 +28,32 @@ class SQLParser:
         self.FROM = CaselessKeyword("FROM")
         self.WHERE = CaselessKeyword("WHERE")
         
-        # identifiers and literals
-        self.identifier = Word(alphas, alphanums + '_')
-        self.quoted_str = QuotedString("'")
-        self.integer = Word(nums).setParseAction(lambda t: int(t[0]))
+
         
         # build grammar
         self.select_stmt = self._build_select_grammar()
         
     def _build_select_grammar(self):
-        # column references
-        column_ref = Group(
-            Optional(self.identifier + Suppress('.'))("table") + 
-            self.identifier("column")
+        column_ref = self.column_ref
+        
+        # add Group() around table_ref
+        table_ref = Group(
+            self.identifier("table") + 
+            Optional(Suppress("AS") + self.identifier("alias"))
         )
         
-        # table references
-        table_ref = self.identifier("table") + Optional(Suppress("AS") + self.identifier("alias"))
-        
-        # WHERE clause conditions
         condition = self._build_condition_grammar()
         
-        # SELECT statement
         return (self.SELECT + delimitedList(column_ref | self.STAR)("columns") +
                 self.FROM + delimitedList(table_ref)("tables") +
                 Optional(self.WHERE + condition)("where")).setParseAction(self._validate_query)
+
+
     
     def _build_condition_grammar(self):
         expr = Forward()
         comp_op = oneOf("= != < > <= >=")
-        
-        # mo: add column reference
-        column_ref = Group(
-            Optional(self.identifier + Suppress('.'))("table") + 
-            self.identifier("column")
-        )
-        
-        atom = self.quoted_str | self.integer | column_ref
+        atom = self.quoted_str | self.integer | self.column_ref
         condition = Group(atom + comp_op + atom)
         
         expr <<= infixNotation(
@@ -63,28 +65,40 @@ class SQLParser:
         )
         return expr
     
+
+
     def _validate_query(self, parse_result):
-        # validate tables
+        # validate tables with proper ParseResults access
         for table in parse_result.tables:
             try:
-                self.catalog.get_schema(table.table.lower())
+                # access table name correctly from grouped results
+                table_name = table.table[0].lower() if isinstance(table.table, ParseResults) else table.table.lower()
+                self.catalog.get_schema(table_name)
             except UnknownTableError:
-                raise ParseException(f"Unknown table: {table.table}")
-                
-        # validate columns
+                raise ParseException(f"Unknown table: {table_name}")
+
+        # validate ALL columns in SELECT clause, not just qualified ones
         for col in parse_result.columns:
+            if col == '*':  # skip validation for wildcard
+                continue
+                
             if col.table:  # qualified column
-                schema = self.catalog.get_schema(col.table.lower())
+                # extract table name from ParseResults
+                table_name = col.table[0].lower()  # access the first element 
+                schema = self.catalog.get_schema(table_name)
+                
                 if col.column.lower() not in schema.col_names():
-                    raise ParseException(f"Unknown column {col.table}.{col.column}")
+                    raise ParseException(f"Unknown column {table_name}.{col.column}")
             else:  # unqualified column
-                found = []
+                # check if this column exists in any of the referenced tables
+                found = False
                 for table in parse_result.tables:
-                    schema = self.catalog.get_schema(table.table.lower())
+                    table_name = table.table[0].lower() if isinstance(table.table, ParseResults) else table.table.lower()
+                    schema = self.catalog.get_schema(table_name)
                     if col.column.lower() in schema.col_names():
-                        found.append(table.table)
-                if len(found) > 1:
-                    raise ParseException(f"Ambiguous column: {col.column}")
+                        found = True
+                        break
+                        
                 if not found:
                     raise ParseException(f"Unknown column: {col.column}")
                     
@@ -101,6 +115,9 @@ class SQLParser:
                     
         return parse_result
     
+
+
+
     def _get_type(self, element, tables):
         if isinstance(element, (int, str)):
             return 'INT' if isinstance(element, int) else 'STR'
