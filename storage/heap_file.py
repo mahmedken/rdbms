@@ -81,3 +81,72 @@ class HeapFile:
         with fp.open("rb") as f:
             f.seek(offset)
             return self._decode_row(f.readline())
+    
+    def delete(self, pk_val):
+        """Delete a row by primary key"""
+        if self.pk_index is None:
+            raise RuntimeError("No primary key defined")
+            
+        offset = self.pk_index.search(pk_val)
+        if offset is None:
+            return  # nothing to delete
+            
+        # create a new data file without the deleted record
+        fp = self.dir / f"{self.table}.dat"
+        temp_fp = self.dir / f"{self.table}.tmp"
+        
+        # create a new index for the restructured file
+        old_index_path = self.dir / f"{self.table}.pk.index"
+        backup_index_path = self.dir / f"{self.table}.pk.index.bak"
+        
+        # create a new empty index - not sure if this is needed
+        if old_index_path.exists():
+            if backup_index_path.exists():
+                backup_index_path.unlink()
+            old_index_path.rename(backup_index_path)
+            
+        # create new index
+        self.pk_index = BTreeIndex(old_index_path)
+        
+        with fp.open("rb") as src, temp_fp.open("wb") as dst:
+            current_pos = 0
+            new_pos = 0
+            
+            for line in src:
+                if current_pos == offset:
+                    # skip this record (it's being deleted)
+                    current_pos += len(line)
+                    continue
+                    
+                # copy this record to the new file
+                dst.write(line)
+                
+                # update index for this record if needed
+                if self.pk_index is not None:
+                    row = self._decode_row(line)
+                    pk_idx = self.schema.col_names().index(self.schema.primary_key)
+                    row_pk = row[pk_idx]
+                    self.pk_index.insert(row_pk, new_pos)
+                
+                current_pos += len(line)
+                new_pos += len(line)
+        
+        # replace old file with new file
+        fp.unlink()
+        temp_fp.rename(fp)
+    
+    def update(self, pk_val, *new_values):
+        """Update a row by primary key with new values"""
+        #  implement update as delete + insert
+        if self.pk_index is None:
+            raise RuntimeError("No primary key defined")
+            
+        # check if record exists before updating
+        if self.get_by_pk(pk_val) is None:
+            return  # nothing to update
+            
+        self.delete(pk_val)
+        
+        self.insert(*new_values)
+            
+            
