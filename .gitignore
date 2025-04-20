@@ -2,4 +2,4 @@
 *cache*/
 *egg-info/
 *catalog.json
-
+.DS_Store

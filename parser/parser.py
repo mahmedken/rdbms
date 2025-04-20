@@ -7,14 +7,14 @@ from catalog import Catalog, TableSchema, CatalogError, UnknownTableError, Unkno
 class SQLParser:
     def __init__(self, catalog: Catalog):
         self.catalog = catalog
-
-        # Define tokens, keywords, and grammar components
+        
+        # define tokens, keywords, and grammar components
         self._init_tokens()
         self._init_keywords()
         self._init_data_types()
         self._init_expressions()
         
-        # Build grammar for various SQL statements
+        # build grammar for various SQL statements
         self._init_statement_grammar()
         
     def _init_tokens(self):
@@ -24,19 +24,27 @@ class SQLParser:
         self.quoted_str = QuotedString("'")
         self.integer = Word(nums).setParseAction(lambda t: int(t[0]))
 
-        # Basic syntax tokens
+        # basix syntax tokens
         self.LPAR, self.RPAR, self.COMMA = map(Suppress, "(),")
         self.STAR = Literal('*')
         
-        # Value literals for INSERT/UPDATE
+        # value literals for INSERT/UPDATE
         self.value = self.quoted_str | self.integer
         
     def _init_keywords(self):
         """Initialize SQL keywords for different statement types"""
-        # Query keywords
+        # query keywords
         self.SELECT = CaselessKeyword("SELECT")
         self.FROM = CaselessKeyword("FROM")
         self.WHERE = CaselessKeyword("WHERE")
+        self.DISTINCT = CaselessKeyword("DISTINCT")
+        self.ORDER = CaselessKeyword("ORDER")
+        self.BY = CaselessKeyword("BY")
+        self.GROUP = CaselessKeyword("GROUP")
+        self.HAVING = CaselessKeyword("HAVING")
+        self.LIMIT = CaselessKeyword("LIMIT")
+        self.ASC = CaselessKeyword("ASC")
+        self.DESC = CaselessKeyword("DESC")
 
         # DML keywords
         self.INSERT = CaselessKeyword("INSERT")
@@ -66,7 +74,7 @@ class SQLParser:
         """Initialize expression grammars for columns, aggregations, etc."""
         # Standard column reference
         self.column_ref = Group(
-            Optional(self.identifier + Suppress('.'))("table") +
+            Optional(self.identifier + Suppress('.'))("table") + 
             self.identifier("column")
         )
         
@@ -109,23 +117,31 @@ class SQLParser:
             self.delete_stmt
         )
         
-    def _build_select_grammar(self):
-        """Build grammar for SELECT statements"""
-        # Select item can be an aggregate or a column reference or star
-        select_item = self.agg_expr | self.column_ref | self.STAR
+    def _build_having_condition_grammar(self):
+        """Build grammar for HAVING conditions that supports aggregation functions"""
+        expr = Forward()
+        comp_op = oneOf("= != < > <= >=")
         
-        # Table reference with optional alias
-        table_ref = Group(
-            self.identifier("table") + 
-            Optional(Suppress("AS") + self.identifier("alias"))
-        )
+        # allow aggregation expressions in HAVING conditions
+        agg_expr = self.agg_expr
         
-        condition = self._build_condition_grammar()
-        
-        return (self.SELECT + delimitedList(select_item)("columns") +
-                self.FROM + delimitedList(table_ref)("tables") +
-                Optional(self.WHERE + condition)("where")).setParseAction(self._validate_select)
+        # atoms can be literals, columns, or aggregation expressions
+        #atom = self.quoted_str | self.integer | self.column_ref | agg_expr
+        # match am aggregate first - a hack that took me forever to figure out
+        atom = agg_expr | self.column_ref | self.quoted_str | self.integer
 
+        condition = Group(atom + comp_op + atom)
+        
+        expr <<= infixNotation(
+            condition,
+            [
+                (CaselessKeyword("AND"), 2, OpAssoc.LEFT),
+                (CaselessKeyword("OR"), 2, OpAssoc.LEFT),
+            ]
+        )
+        return expr
+    
+    
     def _build_condition_grammar(self):
         """Build grammar for WHERE conditions"""
         expr = Forward()
@@ -141,6 +157,48 @@ class SQLParser:
             ]
         )
         return expr
+    
+
+    def _build_select_grammar(self):
+        """Build grammar for SELECT statements"""
+        # Select item can be an aggregate or a column reference or star
+        select_item = self.agg_expr | self.column_ref | self.STAR
+        
+        # Table reference with optional alias
+        table_ref = Group(
+            self.identifier("table") + 
+            Optional(Suppress("AS") + self.identifier("alias"))
+        )
+        
+        # Where condition
+        condition = self._build_condition_grammar()
+        
+        # Having condition - use specialized grammar that supports aggregates
+        having_condition = self._build_having_condition_grammar()
+        
+        # Order by clause
+        order_direction = Optional(self.ASC | self.DESC, default="ASC")("direction")
+        # Allow aggregates in ORDER BY clause
+        order_item = Group((self.agg_expr | self.column_ref) + order_direction)
+        order_by_clause = self.ORDER + self.BY + delimitedList(order_item)("order_by")
+        
+        # Group by clause
+        group_by_item = self.column_ref
+        group_by_clause = self.GROUP + self.BY + delimitedList(group_by_item)("group_by")
+        
+        # Having clause (with aggregate support)
+        having_clause = Optional(self.HAVING + having_condition)("having")
+        
+        # Limit clause
+        limit_clause = self.LIMIT + self.integer("limit")
+        
+        return (self.SELECT + Optional(self.DISTINCT("distinct")) + delimitedList(select_item)("columns") +
+                self.FROM + delimitedList(table_ref)("tables") +
+                Optional(self.WHERE + condition)("where") +
+                Optional(group_by_clause) +
+                having_clause +
+                Optional(order_by_clause) +
+                Optional(limit_clause)).setParseAction(self._validate_select)
 
     def _build_create_table_grammar(self):
         """Build grammar for CREATE TABLE statements"""
@@ -391,7 +449,6 @@ class SQLParser:
         """Validate SELECT query structure and semantics"""
         # Build table alias map
         alias_map = self._build_alias_map(parse_result.tables)
-        
         # Validate tables exist in catalog
         self._validate_tables_exist(parse_result.tables)
 
@@ -403,8 +460,30 @@ class SQLParser:
             condition = self._extract_condition(parse_result.where)
             self._validate_where_condition(condition, parse_result.tables, alias_map)
         
-        parse_result['query_type'] = 'SELECT'
+        # Validate GROUP BY clause if present
+        if 'group_by' in parse_result:
+            self._validate_group_by_columns(parse_result.group_by, alias_map)
             
+            # Validate that non-aggregated columns in SELECT are in GROUP BY
+            self._validate_select_with_group_by(parse_result.columns, parse_result.group_by)
+            
+        # Validate HAVING clause if present
+        if 'having' in parse_result:
+            if 'group_by' not in parse_result:
+                raise ParseException("HAVING clause requires a GROUP BY clause")
+            self._validate_having_condition(parse_result.having, parse_result.tables, alias_map)
+            
+        # Validate ORDER BY clause if present
+        if 'order_by' in parse_result:
+            self._validate_order_by_columns(parse_result.order_by, parse_result.tables, alias_map)
+            
+        # Validate LIMIT if present
+        if 'limit' in parse_result:
+            if not isinstance(parse_result.limit, int) or parse_result.limit < 0:
+                raise ParseException("LIMIT value must be a non-negative integer")
+        
+        parse_result['query_type'] = 'SELECT'
+                    
         return parse_result
     
     def _build_alias_map(self, tables):
@@ -412,10 +491,10 @@ class SQLParser:
         alias_map = {}
         for table in tables:
             table_name = table.table[0].lower() if isinstance(table.table, ParseResults) else table.table.lower()
-            # Store alias -> actual table name mapping
+            # store alias -> actual table name mapping
             if "alias" in table:
                 alias_map[table.alias.lower()] = table_name
-            else: # Table name is its own alias
+            else: # table name is its own alias
                 alias_map[table_name] = table_name
         return alias_map
     
@@ -448,7 +527,7 @@ class SQLParser:
         func = agg_expr.function.upper()
         arg = agg_expr.argument
         
-        # Unpack a ParseResults object if that's what arg is
+        # unpack a ParseResults object if that's what arg is
         if isinstance(arg, ParseResults) and len(arg) > 0:
             arg = arg[0]
         
@@ -461,9 +540,9 @@ class SQLParser:
             return
             
         # Validate the column exists
-        if arg.table:  # Qualified column
+        if arg.table:  # qualified column
             self._validate_qualified_column(arg, alias_map)
-        else:  # Unqualified column
+        else:  # unqualified column
             self._validate_unqualified_column(arg, alias_map)
         
         # Check if the aggregation function is appropriate for the column type
@@ -474,9 +553,9 @@ class SQLParser:
     
     def _validate_column_reference(self, col, alias_map):
         """Validate a column reference (qualified or unqualified)"""
-        if col.table:  # Qualified column
+        if col.table:  # qualified column
             self._validate_qualified_column(col, alias_map)
-        else:  # Unqualified column
+        else:  # unqualified column
             self._validate_unqualified_column(col, alias_map)
     
     def _validate_qualified_column(self, col, alias_map):
@@ -563,7 +642,6 @@ class SQLParser:
             
             if col_name in schema.col_names():
                 return self._get_column_type(col_name, schema)
-                
         raise UnknownColumnError(col_ref.column)
     
     def _get_column_type_in_table(self, col_name, table_name):
@@ -586,6 +664,115 @@ class SQLParser:
         if (expected_type == 'INT' and not isinstance(value, int)) or \
            (expected_type == 'STR' and not isinstance(value, str)):
             raise ParseException(f"Type mismatch for column '{col_name}': expected {expected_type}")
+
+    def _validate_group_by_columns(self, group_by_cols, alias_map):
+        """Validate columns in GROUP BY clause"""
+        for col in group_by_cols:
+            self._validate_column_reference(col, alias_map)
+            
+    def _validate_select_with_group_by(self, select_cols, group_by_cols):
+        """Validate that non-aggregated columns in SELECT are in GROUP BY"""
+        group_by_col_names = []
+        
+        # Extract the qualified column names from GROUP BY
+        for col in group_by_cols:
+            if col.table:
+                # Extract table/alias name properly
+                tbl = col.table[0].lower() if isinstance(col.table, ParseResults) else col.table.lower()
+                col_name = f"{tbl}.{col.column.lower()}"
+            else:
+                col_name = col.column.lower()
+            group_by_col_names.append(col_name)
+        
+        # Check each column in SELECT
+        for col in select_cols:
+            if col == '*':
+                raise ParseException("Cannot use * with GROUP BY")
+                
+            if col.getName() != "aggregation":
+                if col.table:
+                    # Extract table/alias name properly
+                    tbl = col.table[0].lower() if isinstance(col.table, ParseResults) else col.table.lower()
+                    col_name = f"{tbl}.{col.column.lower()}"
+                else:
+                    col_name = col.column.lower()
+                    
+                # Check if non-aggregated column is in GROUP BY
+                if col_name not in group_by_col_names:
+                    raise ParseException(f"Column '{col_name}' must be in GROUP BY clause or be an aggregate function")
+    
+    def _validate_having_condition(self, having_clause, tables, alias_map):
+        """Validate HAVING condition (must include aggregates)"""
+        # Skip the HAVING keyword if present
+        if having_clause and len(having_clause) > 0:
+            # The condition is directly under the 'having' key since we're using Optional() with a name
+            condition = having_clause
+            
+            # Validate the condition (similar to WHERE but we allow aggregate functions)
+            self._validate_aggregate_condition(condition, tables, alias_map)
+    
+    def _validate_aggregate_condition(self, expr, tables, alias_map):
+        """Validate a condition that may contain aggregate functions"""
+        # Skip if we can't parse the expression structure
+        if not isinstance(expr, ParseResults) or len(expr) < 3:
+            return
+            
+        # Handle comparison operations
+        if expr[1] in ("=", "!=", "<", ">", "<=", ">="):
+            # Left and right operands could be columns, literals, or aggregates
+            self._validate_operand(expr[0], tables, alias_map)
+            self._validate_operand(expr[2], tables, alias_map)
+            
+        # Handle AND/OR
+        elif expr[1].upper() in ("AND", "OR"):
+            self._validate_aggregate_condition(expr[0], tables, alias_map)
+            self._validate_aggregate_condition(expr[2], tables, alias_map)
+    
+    def _validate_operand(self, operand, tables, alias_map):
+        """Validate an operand in a HAVING condition, which can be a column, literal, or aggregate"""
+        # If it's a simple literal, nothing to validate
+        if isinstance(operand, (int, str)):
+            return
+            
+        # If it's a column reference
+        if hasattr(operand, 'table') and hasattr(operand, 'column'):
+            self._validate_column_reference(operand, alias_map)
+            return
+            
+        # If it's an aggregate function like COUNT(*)
+        if len(operand) >= 3 and operand[0] in ("MIN", "MAX", "SUM", "AVG", "COUNT"):
+            func = operand[0].upper()
+            arg = operand[1]  # This could be a column or "*"
+            
+            # Handle COUNT(*)
+            if func == "COUNT" and arg == "*":
+                return
+                
+            # For aggregate on column, validate the column
+            if hasattr(arg, 'table') and hasattr(arg, 'column'):
+                self._validate_column_reference(arg, alias_map)
+                
+                # Check if numeric aggregation is on numeric column
+                if func in ("SUM", "AVG"):
+                    col_type = self._get_type(arg, tables, alias_map)
+                    if col_type != "INT":
+                        raise ParseException(f"{func} can only be applied to numeric columns, not {col_type}")
+                return
+            
+        # If we get here, it's an unsupported expression type
+        raise ParseException(f"Unsupported expression in HAVING clause: {operand}")
+    
+    def _validate_order_by_columns(self, order_by_cols, tables, alias_map):
+        """Validate columns in ORDER BY clause"""
+        for order_item in order_by_cols:
+            item = order_item[0]  # first element is the column reference or aggregation
+            
+            # Check if it's an aggregation expression
+            if item.getName() == "aggregation":
+                self._validate_aggregation(item, alias_map, tables)
+            else:
+                # Regular column validation
+                self._validate_column_reference(item, alias_map)
 
     def parse(self, query):
         """Parse a SQL query string into a parse result object"""

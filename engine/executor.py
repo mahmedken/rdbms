@@ -8,7 +8,8 @@ from catalog import Catalog
 from storage.heap_file import HeapFile
 from .operators import (
     Projection, Selection, TableScan, NestedLoopJoin, Aggregation, 
-    InsertOperator, DeleteOperator, UpdateOperator, Row
+    InsertOperator, DeleteOperator, UpdateOperator, Row,
+    Sort, GroupBy, Having, Limit
 )
 from pyparsing import ParseResults
 
@@ -57,6 +58,7 @@ class Executor:
         """Build a plan for SELECT queries"""
         # check if we have aggregation in the query
         has_aggregation = any(col.getName() == "aggregation" for col in q.columns if col != "*")
+        has_group_by = 'group_by' in q
         
         # from clause - build base scans (handle alias)
         scans: Dict[str, TableScan] = {}
@@ -72,17 +74,80 @@ class Executor:
             plan = next(iter(scans.values()))
         elif len(scans) == 2:
             (a_alias, a_scan), (b_alias, b_scan) = scans.items()
-            join_pred = self._compile_predicate(q.where) if "where" in q else lambda r: True
+            join_pred = self._compile_predicate(q.where, scans) if "where" in q else lambda r: True
             plan = NestedLoopJoin(a_scan, b_scan, join_pred)
         else:
             raise NotImplementedError(">2 tables not supported")
 
         # selections (for single‑table queries)
         if len(scans) == 1 and "where" in q:
-            plan = Selection(plan, self._compile_predicate(q.where))
+            plan = Selection(plan, self._compile_predicate(q.where, scans))
 
-        if has_aggregation:
+        if has_group_by:
+            # build GROUP BY operator with aggregations
+            group_keys = self._qualify_cols(q.group_by, scans)
+            
             # build aggregation functions dict: { output_col -> (func, input_col) }
+            agg_functions = {}
+            
+            # create output column names for aggregations
+            for i, col in enumerate(q.columns):
+                if col.getName() == "aggregation":
+                    func = col.function.upper()
+                    
+                    # handle COUNT(*) special case
+                    if func == "COUNT" and col.argument[0] == "*":
+                        output_col = f"COUNT(*)"
+                        input_col = "*"
+                    else:
+                        # handle regular aggregation on column
+                        arg = col.argument[0]
+                        if arg.table:
+                            # qualified column
+                            tbl = arg.table[0].lower() if isinstance(arg.table, ParseResults) else arg.table.lower()
+                        else:
+                            # unqualified column - infer table
+                            tbl = self._infer_table(arg.column, scans)
+                            
+                        input_col = f"{tbl}.{arg.column}"
+                        output_col = f"{func}({input_col})"
+                    
+                    agg_functions[output_col] = (func, input_col)
+            
+            plan = GroupBy(plan, group_keys, agg_functions)
+            
+            # Apply HAVING clause if present
+            if 'having' in q:
+                having_pred = self._compile_predicate(q.having, scans)
+                plan = Having(plan, having_pred)
+            
+            # we need a projection to handle the column structure in the output
+            cols = []
+            for col in q.columns:
+                if col == "*":
+                    # can't mix * with aggregates or GROUP BY
+                    continue
+                elif col.getName() == "aggregation":
+                    func = col.function.upper()
+                    if func == "COUNT" and col.argument[0] == "*":
+                        cols.append(f"COUNT(*)")
+                    else:
+                        arg = col.argument[0]
+                        if arg.table:
+                            tbl = arg.table[0].lower() if isinstance(arg.table, ParseResults) else arg.table.lower()
+                        else:
+                            tbl = self._infer_table(arg.column, scans)
+                        cols.append(f"{func}({tbl}.{arg.column})")
+                else:
+                    # regular column (must be in GROUP BY)
+                    if col.table:
+                        tbl = col.table[0].lower() if isinstance(col.table, ParseResults) else col.table.lower()
+                    else:
+                        tbl = self._infer_table(col.column, scans)
+                    cols.append(f"{tbl}.{col.column}")
+            plan = Projection(plan, cols)
+        elif has_aggregation:
+            # Simple aggregation without GROUP BY
             agg_functions = {}
             
             # create output column names for aggregations
@@ -141,6 +206,47 @@ class Executor:
             # regular projection (no aggregation)
             cols = ["*"] if q.columns and q.columns[0] == "*" else self._qualify_cols(q.columns, scans)
             plan = Projection(plan, cols)
+        
+        # ORDER BY clause
+        if 'order_by' in q:
+            sort_keys = []
+            for order_item in q.order_by:
+                item = order_item[0]  # column reference or aggregation
+                direction = order_item.direction  # ASC or DESC
+                
+                # Handle aggregation functions in ORDER BY
+                if item.getName() == "aggregation":
+                    func = item.function.upper()
+                    arg = item.argument[0]
+                    
+                    # Handle COUNT(*) special case
+                    if func == "COUNT" and arg == "*":
+                        qualified_col = f"COUNT(*)"
+                    else:
+                        # Get table name for the column in the aggregation
+                        if arg.table:
+                            tbl = arg.table[0].lower() if isinstance(arg.table, ParseResults) else arg.table.lower()
+                        else:
+                            tbl = self._infer_table(arg.column, scans)
+                        qualified_col = f"{func}({tbl}.{arg.column})"
+                else:
+                    # regular column reference
+                    col = item
+                    if col.table:
+                        tbl = col.table[0].lower() if isinstance(col.table, ParseResults) else col.table.lower()
+                    else:
+                        tbl = self._infer_table(col.column, scans)
+                    qualified_col = f"{tbl}.{col.column}"
+                
+                is_ascending = direction.upper() == "ASC"
+                sort_keys.append((qualified_col, is_ascending))
+            
+            plan = Sort(plan, sort_keys)
+            
+        # LIMIT clause
+        if 'limit' in q:
+            limit_value = q.limit
+            plan = Limit(plan, limit_value)
             
         return plan
     
@@ -177,7 +283,7 @@ class Executor:
         
         # If there's a WHERE clause, add a selection
         if "where" in q:
-            selection = Selection(scan, self._compile_predicate(q.where))
+            selection = Selection(scan, self._compile_predicate(q.where, None))
             plan = DeleteOperator(selection, heap)
         else:
             # Delete all rows
@@ -202,7 +308,7 @@ class Executor:
         
         # If there's a WHERE clause, add a selection
         if "where" in q:
-            selection = Selection(scan, self._compile_predicate(q.where))
+            selection = Selection(scan, self._compile_predicate(q.where, None))
             plan = UpdateOperator(selection, heap, updates)
         else:
             # Update all rows
@@ -233,12 +339,12 @@ class Executor:
                 return alias
         raise ValueError(f"Ambiguous column {col}")
 
-    def _compile_predicate(self, where_clause) -> Callable[[Row], bool]:
+    def _compile_predicate(self, where_clause, scans) -> Callable[[Row], bool]:
         # recursively turn parse tree into python lambda
         # where_clause is a nested list (pyparsing output)
         
         # extract the actual condition from WHERE clause if needed
-        if isinstance(where_clause, ParseResults) and len(where_clause) >= 2 and where_clause[0] == 'WHERE':
+        if isinstance(where_clause, ParseResults) and len(where_clause) >= 2 and where_clause[0] == 'WHERE' or where_clause[0] == 'HAVING':
             condition = where_clause[1]  # skip the 'WHERE' keyword
         else:
             condition = where_clause
@@ -247,8 +353,44 @@ class Executor:
         def _value(expr, row):
             if isinstance(expr, (int, str)):
                 return expr
+                
+            # Handle aggregate function expressions
+            if isinstance(expr, ParseResults) and len(expr) >= 2:
+                # Check if it looks like an aggregate function
+                if expr[0] in ("MIN", "MAX", "SUM", "AVG", "COUNT"):
+                    func = expr[0].upper()
+                    arg = expr[1]
+
+                    if func == "COUNT" and arg == "*":
+                        agg_key = "COUNT(*)"
+                    else:
+                        # For column-based aggregates
+                        if hasattr(arg, 'table') and hasattr(arg, 'column'):
+                            col = arg.column
+                            if arg.table:
+                                tbl = arg.table[0].lower() if isinstance(arg.table, ParseResults) else arg.table.lower()
+                                col_name = f"{tbl}.{col}"
+                            elif self._infer_table(col, scans):
+                                tbl = self._infer_table(col, scans)
+                                col_name = f"{tbl}.{col}"
+                            else:
+                                # For unqualified columns, try to find in the row
+                                for key in row:
+                                    if key.endswith(f".{col}") or (f"{col}" in key):
+                                        col_name = key
+                                        break
+                                else:
+                                    raise ValueError(f"Column not found for aggregate: {col}")
+                            
+                            agg_key = f"{func}({col_name})"
+                        else:
+                            raise ValueError(f"Invalid aggregate argument: {arg}")
+                    if agg_key in row:
+                        return row[agg_key]
+                    raise ValueError(f"Aggregate function not found in result: {agg_key}")
+            
+            # Handle column references
             if hasattr(expr, 'table') and hasattr(expr, 'column'):
-                # handle column reference
                 if expr.table:
                     # extract table/alias name properly
                     table = expr.table[0].lower() if isinstance(expr.table, ParseResults) else expr.table.lower()
@@ -260,6 +402,7 @@ class Executor:
                             return row[key]
                     raise ValueError(f"Column not found: {expr.column}")
                 return row.get(col_name)
+                
             raise ValueError(f"Unsupported expression type: {type(expr)}")
         
         # map ops to lambda functions

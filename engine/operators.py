@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import itertools
 from typing import Callable, Dict, Iterator, List, Tuple, Any, Optional
+from collections import defaultdict
 
 # a tuple is represented as a dict {"alias.col": value}
 Row = Dict[str, object]
@@ -366,6 +367,241 @@ class UpdateOperator(Operator):
             self._result = None
             return result
         return None
+        
+    def close(self):
+        self.child.close()
+
+# ─────────────────────────────────────────────────────────────────────
+# Operators for query features
+
+class Sort(Operator):
+    """Sort operator that sorts tuples based on given criteria"""
+    
+    def __init__(self, child: Operator, sort_keys: List[Tuple[str, bool]]):
+        """
+        Initialize the sort operator
+        
+        Args:
+            child: The input operator
+            sort_keys: List of (column, is_ascending) pairs defining the sort order
+        """
+        self.child = child
+        self.sort_keys = sort_keys
+        self._sorted_rows: List[Row] = []
+        self._index = 0
+        
+    def open(self):
+        # Collect all rows from child
+        self.child.open()
+        self._sorted_rows = []
+        while True:
+            row = self.child.next()
+            if row is None:
+                break
+            self._sorted_rows.append(row)
+
+        
+        # helper to create reverse sort keys
+        def _get_reverse_key(value):
+            """Create a key for descending order sort"""
+            if value is None:
+                return value
+            if isinstance(value, (int, float)):
+                return -value
+            # for strings, return a key that will sort in reverse
+            return tuple(reversed([ord(c) for c in str(value)]))
+            
+        # Sort the rows based on the sort keys
+        self._sorted_rows.sort(key=lambda row: tuple(
+            row.get(col) if asc else _get_reverse_key(row.get(col))
+            for col, asc in self.sort_keys
+        ))
+        
+        self._index = 0
+        
+    def next(self):
+        if self._index >= len(self._sorted_rows):
+            return None
+        row = self._sorted_rows[self._index]
+        self._index += 1
+        return row
+        
+    def close(self):
+        self._sorted_rows = []
+        self._index = 0
+        self.child.close()
+
+
+class GroupBy(Operator):
+    """Group By operator that groups tuples based on given columns"""
+    
+    def __init__(self, child: Operator, group_keys: List[str], agg_functions: Dict[str, Tuple[str, str]]):
+        """
+        Initialize the group by operator
+        
+        Args:
+            child: The input operator
+            group_keys: List of column names to group by
+            agg_functions: Dict mapping output column name to (function, input_column)
+                where function is one of: MIN, MAX, SUM, AVG, COUNT
+        """
+        self.child = child
+        self.group_keys = group_keys
+        self.agg_functions = agg_functions
+        self._groups: List[Row] = []
+        self._index = 0
+        
+    def open(self):
+        self.child.open()
+        
+        # Collect all rows and group them
+        groups = defaultdict(list)
+        while True:
+            row = self.child.next()
+            if row is None:
+                break
+                
+            # Create a key tuple from the group by columns
+            group_key = tuple(row.get(key) for key in self.group_keys)
+            groups[group_key].append(row)
+        
+        # Process each group to calculate aggregates
+        self._groups = []
+        for group_key, rows in groups.items():
+            result_row = {}
+            
+            # Add group by columns to result
+            for i, key in enumerate(self.group_keys):
+                result_row[key] = group_key[i]
+                
+            # Apply aggregation functions to each group
+            for output_col, (func, input_col) in self.agg_functions.items():
+                # Handle COUNT(*) special case
+                if func == "COUNT" and input_col == "*":
+                    result_row[output_col] = len(rows)
+                    continue
+                
+                # Initialize aggregation values
+                aggregate = None
+                count = 0  # For AVG calculation
+                
+                # Apply the appropriate aggregation function to all rows in the group
+                for row in rows:
+                    # Skip NULL values (except for COUNT)
+                    if input_col not in row or row[input_col] is None:
+                        if func == "COUNT":
+                            result_row[output_col] = result_row.get(output_col, 0) + 1
+                        continue
+                    
+                    value = row[input_col]
+                    
+                    # Apply the aggregation function
+                    if func == "MIN":
+                        if aggregate is None or value < aggregate:
+                            aggregate = value
+                    elif func == "MAX":
+                        if aggregate is None or value > aggregate:
+                            aggregate = value
+                    elif func == "SUM":
+                        if aggregate is None:
+                            aggregate = 0
+                        aggregate += value
+                    elif func == "AVG":
+                        if aggregate is None:
+                            aggregate = 0
+                        aggregate += value
+                        count += 1
+                    elif func == "COUNT":
+                        if aggregate is None:
+                            aggregate = 0
+                        aggregate += 1
+                
+                # Finalize AVG calculation
+                if func == "AVG" and count > 0:
+                    aggregate = aggregate / count
+                
+                # Handle empty result sets
+                if len(rows) == 0:
+                    if func == "COUNT":
+                        aggregate = 0
+                    else:
+                        aggregate = None
+                        
+                result_row[output_col] = aggregate
+            
+            self._groups.append(result_row)
+            
+        self._index = 0
+        
+    def next(self):
+        if self._index >= len(self._groups):
+            return None
+        row = self._groups[self._index]
+        self._index += 1
+        return row
+        
+    def close(self):
+        self._groups = []
+        self._index = 0
+        self.child.close()
+
+class Having(Operator):
+    """Having operator that filters groups based on a predicate"""
+    
+    def __init__(self, child: Operator, predicate: Callable[[Row], bool]):
+        """
+        Initialize the having operator
+        
+        Args:
+            child: The input operator (typically a GroupBy)
+            predicate: Function that takes a row and returns True if it should be included
+        """
+        self.child = child
+        self.predicate = predicate
+        
+    def open(self):
+        self.child.open()
+        
+    def next(self):
+        while True:
+            row = self.child.next()
+            if row is None:
+                return None
+            if self.predicate(row):
+                return row
+        
+    def close(self):
+        self.child.close()
+
+class Limit(Operator):
+    """Limit operator that limits the number of tuples returned"""
+    
+    def __init__(self, child: Operator, limit: int):
+        """
+        Initialize the limit operator
+        
+        Args:
+            child: The input operator
+            limit: Maximum number of rows to return
+        """
+        self.child = child
+        self.limit = limit
+        self._count = 0
+        
+    def open(self):
+        self.child.open()
+        self._count = 0
+        
+    def next(self):
+        if self._count >= self.limit:
+            return None
+        
+        row = self.child.next()
+        if row is None:
+            return None
+            
+        self._count += 1
+        return row
         
     def close(self):
         self.child.close()
