@@ -218,7 +218,7 @@ class Aggregation(Operator):
         self.child.close()
 
 # ─────────────────────────────────────────────────────────────────────
-# Operators for DML (Data Manipulation Language) statements
+# dml operators
 
 class InsertOperator(Operator):
     """Insert values into a table"""

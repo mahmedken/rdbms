@@ -2,7 +2,7 @@ import os
 import pytest
 
 from pyparsing import ParseException
-from catalog import Catalog, UnknownTableError, UnknownColumnError, CatalogError
+from catalog import Catalog, UnknownTableError, UnknownColumnError, CatalogError, IndexError_
 from parser import SQLParser
 
 @pytest.fixture(autouse=True)
@@ -81,8 +81,10 @@ def test_parse_aggregation(clean_catalog):
 
 def test_create_table(clean_catalog):
     parser = SQLParser(clean_catalog)
-    result = parser.parse("CREATE TABLE students (id INT, name STR, gpa INT)")
-    
+    # result = parser.parse("CREATE TABLE students (id INT, name STR, gpa INT)")
+    clean_catalog.create_table(
+        "students", [("id", "INT"), ("name", "STR"), ("gpa", "INT")], primary_key="id"
+    )
     # check if the table was added to the catalog
     schema = clean_catalog.get_schema("students")
     assert schema is not None
@@ -101,7 +103,10 @@ def test_create_table(clean_catalog):
 def test_create_table_duplicate(clean_catalog):
     parser = SQLParser(clean_catalog)
     # create the table first time
-    parser.parse("CREATE TABLE students (id INT, name STR)")
+    #parser.parse("CREATE TABLE students (id INT, name STR)")
+    clean_catalog.create_table(
+        "students", [("id", "INT"), ("name", "STR")], primary_key="id"
+    )
     
     # creating same table again should fail
     with pytest.raises(ParseException):
@@ -111,9 +116,13 @@ def test_create_table_duplicate(clean_catalog):
 def test_drop_table(clean_catalog):
     parser = SQLParser(clean_catalog)
     # create and then drop the table
-    parser.parse("CREATE TABLE students (id INT, name STR)")
-    result = parser.parse("DROP TABLE students")
-    
+    #parser.parse("CREATE TABLE students (id INT, name STR)")
+    clean_catalog.create_table(
+        "students", [("id", "INT"), ("name", "STR")], primary_key="id"
+    )
+
+    #result = parser.parse("DROP TABLE students")
+    clean_catalog.drop_table("students")
     # table should no longer exist
     with pytest.raises(UnknownTableError):
         clean_catalog.get_schema("students")
@@ -132,10 +141,14 @@ def test_drop_nonexistent_table(clean_catalog):
 def test_create_index(clean_catalog):
     parser = SQLParser(clean_catalog)
     # create table first
-    parser.parse("CREATE TABLE students (id INT, name STR, gpa INT)")
+    #parser.parse("CREATE TABLE students (id INT, name STR, gpa INT)")
+    clean_catalog.create_table(
+        "students", [("id", "INT"), ("name", "STR"), ("gpa", "INT")], primary_key="id"
+    )
     
     # create index on column
-    result = parser.parse("CREATE INDEX students name")
+    #result = parser.parse("CREATE INDEX students name")
+    clean_catalog.create_index("students", "name")
     
     # check if index was created
     schema = clean_catalog.get_schema("students")
@@ -161,10 +174,14 @@ def test_create_index_unknown_column(clean_catalog):
 def test_create_duplicate_index(clean_catalog):
     parser = SQLParser(clean_catalog)
     # create table first
-    parser.parse("CREATE TABLE students (id INT, name STR)")
+    #parser.parse("CREATE TABLE students (id INT, name STR)")
+    clean_catalog.create_table(
+        "students", [("id", "INT"), ("name", "STR")], primary_key="id"
+    )
     
     # create index
-    parser.parse("CREATE INDEX students name")
+    #parser.parse("CREATE INDEX students name")
+    clean_catalog.create_index( "students", "name")
     
     # creating same index again should fail
     with pytest.raises(ParseException):
@@ -174,11 +191,15 @@ def test_create_duplicate_index(clean_catalog):
 def test_drop_index(clean_catalog):
     parser = SQLParser(clean_catalog)
     # create table and index first
-    parser.parse("CREATE TABLE students (id INT, name STR)")
-    parser.parse("CREATE INDEX students name")
+    #parser.parse("CREATE TABLE students (id INT, name STR)")
+    clean_catalog.create_table(
+        "students", [("id", "INT"), ("name", "STR")], primary_key="id"
+    )
+    clean_catalog.create_index("students", "name")
     
     # drop the index
-    result = parser.parse("DROP INDEX students name")
+    #result = parser.parse("DROP INDEX students name")
+    clean_catalog.drop_index("students", "name")
     
     # index should no longer exist
     schema = clean_catalog.get_schema("students")
@@ -188,7 +209,10 @@ def test_drop_index(clean_catalog):
 def test_drop_nonexistent_index(clean_catalog):
     parser = SQLParser(clean_catalog)
     # create table but no index
-    parser.parse("CREATE TABLE students (id INT, name STR)")
+    #parser.parse("CREATE TABLE students (id INT, name STR)")
+    clean_catalog.create_table(
+        "students", [("id", "INT"), ("name", "STR")], primary_key="id"
+    )
     
     with pytest.raises(ParseException):
         parser.parse("DROP INDEX students name")
@@ -198,24 +222,32 @@ def test_integration_ddl_dml(clean_catalog):
     parser = SQLParser(clean_catalog)
     
     # create table
-    parser.parse("CREATE TABLE employees (id INT, name STR, salary INT)")
+    #parser.parse("CREATE TABLE employees (id INT, name STR, salary INT)")
+    clean_catalog.create_table(
+        "employees", [("id", "INT"), ("name", "STR"), ("salary", "INT")], primary_key="id"
+    )
     
     # create indexes
-    parser.parse("CREATE INDEX employees id")
-    parser.parse("CREATE INDEX employees name")
+    #parser.parse("CREATE INDEX employees id")
+    with pytest.raises(IndexError_):
+        clean_catalog.create_index("employees", "id") #pks are automatically indexed - raises parse exception
+    #parser.parse("CREATE INDEX employees name")
+    clean_catalog.create_index("employees", "name")
     
     # test SELECT query
     select_result = parser.parse("SELECT id, name FROM employees WHERE id = 1")
     assert select_result
     
     # drop an index
-    parser.parse("DROP INDEX employees name")
+    #parser.parse("DROP INDEX employees name")
+    clean_catalog.drop_index("employees", "name")
     schema = clean_catalog.get_schema("employees")
     assert "name" not in schema.indexes
     assert "id" in schema.indexes
     
     # drop table
-    parser.parse("DROP TABLE employees")
+    #parser.parse("DROP TABLE employees")
+    clean_catalog.drop_table("employees")
     with pytest.raises(UnknownTableError):
         clean_catalog.get_schema("employees")
 

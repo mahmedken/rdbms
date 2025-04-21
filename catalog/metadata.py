@@ -171,6 +171,15 @@ class Catalog:
             raise IndexError_("Index already exists")
         schema.indexes.append(column.lower())
         self._flush()
+    
+    def get_index(self, table: str, column: str) -> None:
+        schema = self.get_schema(table.lower())
+        if column.lower() not in schema.col_names():
+            raise UnknownColumnError(column)
+        if column.lower() not in schema.indexes:
+            raise IndexError_("Index does not exist")
+        # get column id in indexes list
+        return schema.indexes.index(column.lower()) 
 
     def drop_index(self, table: str, column: str) -> None:
         schema = self.get_schema(table.lower())

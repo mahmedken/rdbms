@@ -143,6 +143,9 @@ class HeapFile:
             fp.unlink()
         temp_fp.rename(fp)
         
+        # flush the temp index to disk
+        temp_index._flush()
+
         # replace the old index with the new index
         old_index_path = self.dir / f"{self.table}.pk.index"
         if old_index_path.exists():
