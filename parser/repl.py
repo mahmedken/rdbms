@@ -130,6 +130,7 @@ class DatabaseREPL:
         
         return result
     
+
     def _process_command(self, command: str) -> bool:
         """Process special commands and SQL queries."""
         command = command.strip()
@@ -137,25 +138,22 @@ class DatabaseREPL:
         # handle empty input
         if not command:
             return True
-        
+            
         # handle special commands
         if command.lower() == 'exit' or command.lower() == 'quit':
             return False
-        
         if command.lower() == 'help':
             self._show_help()
             return True
-        
         if command.lower() == 'tables':
             tables = self.catalog.list_tables()
             if tables:
                 print("Available tables:")
                 for table in tables:
-                    print(f"  - {table}")
+                    print(f" - {table}")
             else:
                 print("No tables available.")
             return True
-        
         if command.lower().startswith('describe '):
             table_name = command.split(' ', 1)[1].strip()
             try:
@@ -163,7 +161,7 @@ class DatabaseREPL:
                 print(f"Table: {schema.name}")
                 print("Columns:")
                 for col in schema.columns:
-                    print(f"  - {col.name} ({col.type})")
+                    print(f" - {col.name} ({col.type})")
                 if schema.primary_key:
                     print(f"Primary Key: {schema.primary_key}")
                 if schema.indexes:
@@ -171,31 +169,29 @@ class DatabaseREPL:
             except Exception as e:
                 print(f"Error: {e}")
             return True
-        
+            
         # process SQL query
         try:
-            # parse the SQL query
+            # Parse the SQL query
+            start_time = time.perf_counter()
             parsed_query = self.parser.parse(command)
             
-            # execute the query
-            start_time = time.perf_counter()
+            # Check the query type to determine how to handle it
+            query_type = parsed_query.get('query_type') if isinstance(parsed_query, dict) else getattr(parsed_query, 'query_type', None)
             
-            # for DDL statements, the parser already executed them
-            if hasattr(parsed_query, 'query_type') and parsed_query.query_type in [
-                'CREATE_TABLE', 'DROP_TABLE', 'CREATE_INDEX', 'DROP_INDEX'
-            ]:
-                elapsed = time.perf_counter() - start_time
-                print(f"Query executed successfully ({elapsed:.4f} seconds)")
-            else:
-                # for DML/DQL statements, use the executor
+            # For DML/DQL statements, use the executor
+            if query_type in ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE_TABLE', 'DROP_TABLE', 'CREATE_INDEX', 'DROP_INDEX']:
                 rows, elapsed = self.executor.run(parsed_query)
                 print(self._format_results(rows, elapsed))
+            else:
+                print(f"REPL Unsupported query type: {query_type}")
                 
         except Exception as e:
             print(f"Error: {e}")
-        
         return True
-    
+
+
+
     def _show_help(self):
         """Display help information."""
         help_text = """

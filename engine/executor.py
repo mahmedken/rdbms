@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from typing import Callable, Dict, List, Tuple
 
-from catalog import Catalog
+from catalog import Catalog, CatalogError
 from storage.heap_file import HeapFile
 from .operators import (
     Projection, Selection, TableScan, NestedLoopJoin, Aggregation, 
@@ -30,6 +30,15 @@ class Executor:
             plan = self._build_delete_plan(parsed_query)
         elif query_type == 'UPDATE':
             plan = self._build_update_plan(parsed_query)
+        elif query_type == 'CREATE_TABLE':
+            return self._execute_create_table(parsed_query)
+        elif query_type == 'DROP_TABLE':
+            return self._execute_drop_table(parsed_query)
+        elif query_type == 'CREATE_INDEX':
+            return self._execute_create_index(parsed_query)
+        elif query_type == 'DROP_INDEX':
+            return self._execute_drop_index(parsed_query)
+        
         else:
             raise ValueError(f"Unsupported query type: {query_type}")
         
@@ -46,6 +55,88 @@ class Executor:
         elapsed = time.perf_counter() - start
         return rows, elapsed
     
+
+
+
+
+
+    def _execute_create_table(self, parsed_query) -> tuple[List[Row], float]:
+        print(f"Executing CREATE TABLE for {parsed_query.table_name}")
+        start = time.perf_counter()
+        table_name = parsed_query.table_name.lower()
+        columns = [(col_def.name.lower(), col_def.type.upper()) 
+                for col_def in parsed_query.columns]
+        
+        try:
+            self.catalog.create_table(table_name, columns)
+            message = f"Table '{table_name}' created successfully"
+        except CatalogError as e:
+            message = f"Error: {str(e)}"
+        
+        elapsed = time.perf_counter() - start
+        return [{"message": message}], elapsed
+
+    def _execute_drop_table(self, parsed_query) -> tuple[List[Row], float]:
+        print(f"Executing DROP TABLE for {parsed_query.table_name}")
+        start = time.perf_counter()
+        table_name = parsed_query.table_name.lower()
+        
+        try:
+            # get the file path before dropping the table from catalog
+            table_file_path = f"{self.data_dir}/{table_name}.dat"
+            
+            # remove table from catalog
+            self.catalog.drop_table(table_name)
+            
+            # delete the physical file
+            import os
+            if os.path.exists(table_file_path):
+                os.remove(table_file_path)
+                
+            message = f"Table '{table_name}' dropped successfully"
+        except CatalogError as e:
+            message = f"Error: {str(e)}"
+        
+        elapsed = time.perf_counter() - start
+        return [{"message": message}], elapsed
+
+
+    def _execute_create_index(self, parsed_query) -> tuple[List[Row], float]:
+        print(f"Executing CREATE INDEX on {parsed_query.table_name}.{parsed_query.column_name}")
+        start = time.perf_counter()
+        table_name = parsed_query.table_name.lower()
+        column_name = parsed_query.column_name.lower()
+        
+        try:
+            self.catalog.create_index(table_name, column_name)
+            message = f"Index created on {table_name}.{column_name} successfully"
+        except CatalogError as e:
+            message = f"Error: {str(e)}"
+        
+        elapsed = time.perf_counter() - start
+        return [{"message": message}], elapsed
+
+    def _execute_drop_index(self, parsed_query) -> tuple[List[Row], float]:
+        print(f"Executing DROP INDEX on {parsed_query.table_name}.{parsed_query.column_name}")
+        start = time.perf_counter()
+        table_name = parsed_query.table_name.lower()
+        column_name = parsed_query.column_name.lower()
+        
+        try:
+            self.catalog.drop_index(table_name, column_name)
+            message = f"Index dropped on {table_name}.{column_name} successfully"
+        except CatalogError as e:
+            message = f"Error: {str(e)}"
+        
+        elapsed = time.perf_counter() - start
+        return [{"message": message}], elapsed
+
+
+
+
+
+
+
     def _get_query_type(self, query):
         """Determine the type of SQL query"""
         if hasattr(query, 'query_type'):
@@ -275,6 +366,7 @@ class Executor:
     
     def _build_delete_plan(self, q):
         """Build a plan for DELETE queries"""
+        
         table_name = q.table_name.lower()
         heap = HeapFile(self.catalog, self.data_dir, table_name)
         

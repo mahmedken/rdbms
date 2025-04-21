@@ -268,7 +268,7 @@ class SQLParser:
         
         set_clause = delimitedList(assignment)("assignments")
         
-        # WHERE clause (optional)
+        # WHERE clause 
         condition = self._build_condition_grammar()
         
         # UPDATE table_name SET col1 = val1, col2 = val2 [WHERE condition]
@@ -291,65 +291,124 @@ class SQLParser:
             Optional(self.WHERE + condition)("where")
         ).setParseAction(self._validate_delete)
 
-    def _validate_create_table(self, parse_result):
-        """Validate CREATE TABLE statements"""
-        table_name = parse_result.table_name.lower()
-        columns = []
+
+
+      
         
-        # Process column definitions
+
+    def _validate_create_table(self, parse_result):
+        """Validate CREATE TABLE statements without execution"""
+        table_name = parse_result.table_name.lower()
+        
+        # validate that the table doesn't already exist
+        try:
+            self.catalog.get_schema(table_name)
+            raise ParseException(f"Cannot create table '{table_name}': table already exists")
+        except UnknownTableError:
+            # this is expected - we want the table to not exist yet
+            pass
+        
+        # validate column definitions
+        columns = []
+        column_names = set()
+        
         for col_def in parse_result.columns:
             col_name = col_def.name.lower()
             col_type = col_def.type.upper()
+            
+            # check for duplicate column names
+            if col_name in column_names:
+                raise ParseException(f"Duplicate column name '{col_name}' in CREATE TABLE statement")
+            
+            column_names.add(col_name)
+            
+            # validate column type
+            if col_type not in ["INT", "STR"]:
+                raise ParseException(f"Invalid data type '{col_type}' for column '{col_name}'")
+            
             columns.append((col_name, col_type))
         
-        # Create table in catalog
-        try:
-            self.catalog.create_table(table_name, columns)
-            parse_result['query_type'] = 'CREATE_TABLE'
-            return f"Table '{table_name}' created successfully"
-        except CatalogError as e:
-            raise ParseException(str(e))
+        # ensure at least one column is defined
+        if not columns:
+            raise ParseException("CREATE TABLE must define at least one column")
+        
+        parse_result['query_type'] = 'CREATE_TABLE'
+        return parse_result
+
     
+
+
+
+
+
     def _validate_drop_table(self, parse_result):
         """Validate DROP TABLE statements"""
         table_name = parse_result.table_name.lower()
         
+        # validate that the table exists in the catalog
         try:
-            self.catalog.drop_table(table_name)
-            parse_result['query_type'] = 'DROP_TABLE'
-            return f"Table '{table_name}' dropped successfully"
+            self.catalog.get_schema(table_name)
         except UnknownTableError:
-            raise ParseException(f"Unknown table: {table_name}")
+            raise ParseException(f"Cannot drop table '{table_name}': table does not exist")
+        
+        parse_result['query_type'] = 'DROP_TABLE'
+        return parse_result
+
     
     def _validate_create_index(self, parse_result):
         """Validate CREATE INDEX statements"""
         table_name = parse_result.table_name.lower()
         column_name = parse_result.column_name.lower()
         
+        # validate that the table exists
         try:
-            self.catalog.create_index(table_name, column_name)
-            parse_result['query_type'] = 'CREATE_INDEX'
-            return f"Index created on {table_name}.{column_name}"
+            schema = self.catalog.get_schema(table_name)
+            
+            # validate that the column exists in the table
+            if column_name not in schema.col_names():
+                raise ParseException(f"Cannot create index: column '{column_name}' does not exist in table '{table_name}'")
+            
+            # validate that an index doesn't already exist on this column
+            try:
+                self.catalog.get_index(table_name, column_name)
+                raise ParseException(f"Cannot create index: index already exists on column '{column_name}' in table '{table_name}'")
+            except IndexError_:
+                # this is expected - we want the index to not exist yet
+                pass
+                
         except UnknownTableError:
-            raise ParseException(f"Unknown table: {table_name}")
-        except UnknownColumnError:
-            raise ParseException(f"Unknown column: {column_name}")
-        except IndexError_ as e:
-            raise ParseException(str(e))
+            raise ParseException(f"Cannot create index: table '{table_name}' does not exist")
+        
+        parse_result['query_type'] = 'CREATE_INDEX'
+        return parse_result
+
+
     
     def _validate_drop_index(self, parse_result):
         """Validate DROP INDEX statements"""
         table_name = parse_result.table_name.lower()
         column_name = parse_result.column_name.lower()
         
+        # validate that the table exists
         try:
-            self.catalog.drop_index(table_name, column_name)
-            parse_result['query_type'] = 'DROP_INDEX'
-            return f"Index dropped on {table_name}.{column_name}"
+            schema = self.catalog.get_schema(table_name)
+            
+            # validate that the column exists in the table
+            if column_name not in schema.col_names():
+                raise ParseException(f"Cannot drop index: column '{column_name}' does not exist in table '{table_name}'")
+            
+            # validate that the index exists
+            try:
+                self.catalog.get_index(table_name, column_name)
+            except IndexError_:
+                raise ParseException(f"Cannot drop index: no index exists on column '{column_name}' in table '{table_name}'")
+                
         except UnknownTableError:
-            raise ParseException(f"Unknown table: {table_name}")
-        except IndexError_ as e:
-            raise ParseException(str(e))
+            raise ParseException(f"Cannot drop index: table '{table_name}' does not exist")
+        
+        parse_result['query_type'] = 'DROP_INDEX'
+        return parse_result
+
 
     def _validate_insert(self, parse_result):
         """Validate INSERT statements"""
