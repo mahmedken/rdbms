@@ -20,7 +20,8 @@ class QueryOptimizer:
 
         # Optimize condition ordering if WHERE clause exists
         if hasattr(optimized_query, 'where') and optimized_query.where:
-            optimized_query.where = self.optimize_conditions(optimized_query.where, optimized_query.tables)
+            # optimized_query.where = self.optimize_conditions(optimized_query.where, optimized_query.tables)
+            optimized_query['where'] = self.optimize_conditions(optimized_query.where, optimized_query.tables)
 
         # Optimize join method selection if multiple tables
         if len(optimized_query.tables) > 1:
