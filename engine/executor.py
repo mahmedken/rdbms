@@ -9,21 +9,28 @@ from storage.heap_file import HeapFile
 from .operators import (
     Projection, Selection, TableScan, NestedLoopJoin, Aggregation, 
     InsertOperator, DeleteOperator, UpdateOperator, Row,
-    Sort, GroupBy, Having, Limit
+    Sort, GroupBy, Having, Limit, SortMergeJoin
 )
 from pyparsing import ParseResults
+from optimizer import QueryOptimizer
 
 class Executor:
     def __init__(self, catalog: Catalog, data_dir):
         self.catalog = catalog
         self.data_dir = data_dir
+        self.optimizer = QueryOptimizer(catalog)
 
     # public api
     def run(self, parsed_query) -> tuple[List[Row], float]:
         query_type = self._get_query_type(parsed_query)
         
         if query_type == 'SELECT':
-            plan = self._build_select_plan(parsed_query)
+            # Apply optimization if optimizer is available
+            if hasattr(self, 'optimizer'):
+                optimized_query = self.optimizer.optimize(parsed_query)
+                plan = self._build_select_plan(optimized_query)
+            else:
+                plan = self._build_select_plan(parsed_query)
         elif query_type == 'INSERT':
             plan = self._build_insert_plan(parsed_query)
         elif query_type == 'DELETE':
@@ -159,21 +166,61 @@ class Executor:
             alias = tbl.alias if "alias" in tbl and tbl.alias else table_name
             heap = HeapFile(self.catalog, self.data_dir, table_name)
             scans[alias] = TableScan(heap, alias)
-
-        # join or cross products (only support up to 2 tables for now)
+        
+        # join or cross products
         plan = None
         if len(scans) == 1:
             plan = next(iter(scans.values()))
         elif len(scans) == 2:
             (a_alias, a_scan), (b_alias, b_scan) = scans.items()
             join_pred = self._compile_predicate(q.where, scans) if "where" in q else lambda r: True
-            plan = NestedLoopJoin(a_scan, b_scan, join_pred)
+            
+            # Use the optimizer's join method selection if available
+            join_method = q.get('join_method', 'nested_loop')
+            
+            if join_method == 'nested_loop':
+                plan = NestedLoopJoin(a_scan, b_scan, join_pred)
+            else:
+                # In the future, you can implement other join methods here
+                # For now, default to nested loop join
+                plan = NestedLoopJoin(a_scan, b_scan, join_pred)
         else:
             raise NotImplementedError(">2 tables not supported")
 
         # selections (for single‑table queries)
         if len(scans) == 1 and "where" in q:
             plan = Selection(plan, self._compile_predicate(q.where, scans))
+
+
+
+
+
+        elif len(scans) == 2:
+            (a_alias, a_scan), (b_alias, b_scan) = scans.items()
+            join_pred = self._compile_predicate(q.where, scans) if "where" in q else lambda r: True
+            
+            # Use the optimizer's join method selection if available
+            join_method = q.get('join_method', 'nested_loop')
+            
+            if join_method == 'sort_merge':
+                # For sort-merge join, we need to identify the join columns
+                # This is a simplified approach - in a real system, you'd extract this from the WHERE clause
+                join_cols = self._extract_join_columns(q.where, a_alias, b_alias) if "where" in q else None
+                
+                if join_cols:
+                    left_key, right_key = join_cols
+                    plan = SortMergeJoin(a_scan, b_scan, left_key, right_key)
+                else:
+                    # Fall back to nested loop if we can't identify join columns
+                    plan = NestedLoopJoin(a_scan, b_scan, join_pred)
+            else:
+                # Default to nested loop join
+                plan = NestedLoopJoin(a_scan, b_scan, join_pred)
+
+
+
+
+
 
         if has_group_by:
             # build GROUP BY operator with aggregations
@@ -535,3 +582,42 @@ class Executor:
             return _eval(condition)
         except Exception as e:
             raise RuntimeError(f"Failed to compile predicate: {e}") from e
+
+
+
+    def _extract_join_columns(self, where_clause, left_alias, right_alias):
+        """Extract join columns from WHERE clause for sort-merge join"""
+        # Extract the condition from WHERE clause if needed
+        if isinstance(where_clause, ParseResults) and len(where_clause) >= 2 and where_clause[0] == 'WHERE':
+            condition = where_clause[1]
+        else:
+            condition = where_clause
+        
+        # Look for equality conditions between columns from different tables
+        if isinstance(condition, ParseResults) and len(condition) == 3 and condition[1] == '=':
+            left, op, right = condition
+            
+            # Check if these are column references
+            if (hasattr(left, 'table') and hasattr(left, 'column') and 
+                hasattr(right, 'table') and hasattr(right, 'column')):
+                
+                left_table = left.table[0].lower() if isinstance(left.table, ParseResults) else left.table.lower()
+                right_table = right.table[0].lower() if isinstance(right.table, ParseResults) else right.table.lower()
+                
+                # If columns are from our two tables
+                if (left_table == left_alias and right_table == right_alias):
+                    return (f"{left_table}.{left.column}", f"{right_table}.{right.column}")
+                elif (left_table == right_alias and right_table == left_alias):
+                    return (f"{right_table}.{right.column}", f"{left_table}.{left.column}")
+        
+        # For AND conditions, try both sides
+        if isinstance(condition, ParseResults) and len(condition) == 3 and condition[1].upper() == "AND":
+            left_result = self._extract_join_columns(condition[0], left_alias, right_alias)
+            if left_result:
+                return left_result
+            
+            right_result = self._extract_join_columns(condition[2], left_alias, right_alias)
+            if right_result:
+                return right_result
+        
+        return None
