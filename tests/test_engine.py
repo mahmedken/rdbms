@@ -274,11 +274,13 @@ def test_delete_with_condition(setup_db):
     # First, verify Alice exists
     q = parser.parse("SELECT * FROM people WHERE name = 'Alice'")
     rows, _ = exec_.run(q)
+    print(rows)
     assert len(rows) == 1
     
     # Delete Alice
     q = parser.parse("DELETE FROM people WHERE name = 'Alice'")
     result, _ = exec_.run(q)
+    print(result)
     assert result[0]["operation"] == "DELETE"
     assert result[0]["rows_affected"] == 1
     
@@ -290,6 +292,7 @@ def test_delete_with_condition(setup_db):
     # Verify Bob and Charlie still exist
     q = parser.parse("SELECT COUNT(*) FROM people")
     rows, _ = exec_.run(q)
+    print(rows)
     assert rows[0]["COUNT(*)"] == 2
 
 def test_delete_all(setup_db):

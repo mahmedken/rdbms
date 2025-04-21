@@ -274,19 +274,19 @@ class DeleteOperator(Operator):
         if not self._executed:
             self.child.open()
             count = 0
-            # Collect all rows to delete
+            # collect all rows to delete
             rows_to_delete = []
             while True:
                 row = self.child.next()
                 if row is None:
                     break
-                # Extract primary key for deletion
+                # extract primary key for deletion
                 pk_col = f"{self.heap.table}.{self.heap.schema.primary_key}"
                 if pk_col in row:
                     rows_to_delete.append(row[pk_col])
                     count += 1
             
-            # Delete all collected rows
+            # delete all collected rows
             for pk in rows_to_delete:
                 self.heap.delete(pk)
                 

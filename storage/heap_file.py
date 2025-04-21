@@ -156,12 +156,6 @@ class HeapFile:
         self.pk_index = BTreeIndex(old_index_path)
 
 
-
-
-
-
-
-        
     def update(self, pk_val, *new_values):
         """Update a row by primary key with new values"""
         if self.pk_index is None:

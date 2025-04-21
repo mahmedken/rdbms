@@ -60,6 +60,8 @@ class SQLParser:
         self.TABLE = CaselessKeyword("TABLE")
         self.INDEX = CaselessKeyword("INDEX")
         self.ON = CaselessKeyword("ON")
+        self.PRIMARY = CaselessKeyword("PRIMARY")
+        self.KEY = CaselessKeyword("KEY")
         
     def _init_data_types(self):
         """Initialize data type definitions"""
@@ -167,7 +169,7 @@ class SQLParser:
         # Table reference with optional alias
         table_ref = Group(
             self.identifier("table") + 
-            Optional(Suppress("AS") + self.identifier("alias"))
+            Optional(Suppress(CaselessKeyword("AS")) + self.identifier("alias"))
         )
         
         # Where condition
@@ -208,10 +210,16 @@ class SQLParser:
             self.datatype
         )
         
-        # Column list: (col1 type1, col2 type2, ...)
-        column_list = self.LPAR + delimitedList(column_def)("columns") + self.RPAR
+        # Primary key constraint: PRIMARY KEY(column_name)
+        primary_key_constraint = Group(
+            self.PRIMARY + self.KEY + 
+            self.LPAR + self.identifier("pk_column") + self.RPAR
+        )("primary_key")
         
-        # CREATE TABLE table_name (col1 type1, col2 type2, ...)
+        # Column list and constraints: (col1 type1, col2 type2, ..., PRIMARY KEY(col1))
+        column_list = self.LPAR + delimitedList(column_def)("columns") + Optional(Suppress(',') + primary_key_constraint) + self.RPAR
+        
+        # CREATE TABLE table_name (col1 type1, col2 type2, ..., PRIMARY KEY(col1))
         return (
             self.CREATE + self.TABLE + 
             self.identifier("table_name") + 
@@ -332,6 +340,17 @@ class SQLParser:
         if not columns:
             raise ParseException("CREATE TABLE must define at least one column")
         
+        # Check if primary key is specified
+        primary_key = None
+        if 'primary_key' in parse_result:
+            pk_column = parse_result.primary_key.pk_column.lower()
+            # Validate that the column exists in the table definition
+            if pk_column not in column_names:
+                raise ParseException(f"Primary key column '{pk_column}' not found in table definition")
+            primary_key = pk_column
+            
+        # Add the primary key to the parse result for the executor
+        parse_result['primary_key'] = primary_key
         parse_result['query_type'] = 'CREATE_TABLE'
         return parse_result
 

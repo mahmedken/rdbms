@@ -54,10 +54,6 @@ class Executor:
         plan.close()
         elapsed = time.perf_counter() - start
         return rows, elapsed
-    
-
-
-
 
 
     def _execute_create_table(self, parsed_query) -> tuple[List[Row], float]:
@@ -67,9 +63,14 @@ class Executor:
         columns = [(col_def.name.lower(), col_def.type.upper()) 
                 for col_def in parsed_query.columns]
         
+        # Extract primary key if specified
+        primary_key = parsed_query.get('primary_key')
+        
         try:
-            self.catalog.create_table(table_name, columns)
+            self.catalog.create_table(table_name, columns, primary_key=primary_key)
             message = f"Table '{table_name}' created successfully"
+            if primary_key:
+                message += f" with primary key '{primary_key}'"
         except CatalogError as e:
             message = f"Error: {str(e)}"
         
