@@ -2,7 +2,7 @@ import pytest
 from pathlib import Path
 
 from catalog import Catalog
-from parser import SQLParser    
+from parser import SQLParser, QueryValidator
 from engine import Executor
 from storage.heap_file import HeapFile
 
@@ -10,7 +10,9 @@ from storage.heap_file import HeapFile
 def setup_db(tmp_path):
     data_dir = tmp_path / "data"
     catalog = Catalog()
-    parser = SQLParser(catalog)
+    #parser = SQLParser(catalog)
+    parser = SQLParser()
+    validator = QueryValidator(catalog)
     exec_ = Executor(catalog, data_dir)
     
     # Create tables
@@ -68,7 +70,7 @@ def setup_db(tmp_path):
     enrollments.insert(9, 5, 105, 90, "Fall 2023")
     enrollments.insert(10, 1, 103, 82, "Spring 2023")
     
-    yield catalog, parser, exec_
+    yield catalog, parser, validator, exec_
     
     # cleanup
     try:
@@ -83,10 +85,11 @@ def setup_db(tmp_path):
 # Tests for ORDER BY
 def test_order_by_single_column(setup_db):
     """Test ORDER BY with a single column"""
-    _, parser, exec_ = setup_db
+    _, parser, validator, exec_ = setup_db
     
     # Test ascending order (default)
     q = parser.parse("SELECT name, age FROM students ORDER BY age")
+    validator.validate(q)
     rows, _ = exec_.run(q)
     
     # Check order is ascending by age
@@ -104,10 +107,11 @@ def test_order_by_single_column(setup_db):
 
 def test_order_by_multiple_columns(setup_db):
     """Test ORDER BY with multiple columns"""
-    _, parser, exec_ = setup_db
+    _, parser, validator, exec_ = setup_db
     
     # Order by major (ASC) and then by age (DESC)
     q = parser.parse("SELECT name, major, age FROM students ORDER BY major, age DESC")
+    validator.validate(q)
     rows, _ = exec_.run(q)
     
     # Group by major and check that within each group, ages are in descending order
@@ -127,10 +131,11 @@ def test_order_by_multiple_columns(setup_db):
 
 def test_order_by_with_where(setup_db):
     """Test ORDER BY with WHERE clause"""
-    _, parser, exec_ = setup_db
+    _, parser, validator, exec_ = setup_db
     
     # Get students with age > 20, ordered by GPA
     q = parser.parse("SELECT name, age, gpa FROM students WHERE age > 20 ORDER BY gpa DESC")
+    validator.validate(q)
     rows, _ = exec_.run(q)
     
     # Check filtering worked
@@ -146,10 +151,11 @@ def test_order_by_with_where(setup_db):
 # Tests for GROUP BY
 def test_group_by_with_count(setup_db):
     """Test GROUP BY with COUNT aggregation"""
-    _, parser, exec_ = setup_db
+    _, parser, validator, exec_ = setup_db
     
     # Count students by major
     q = parser.parse("SELECT major, COUNT(*) FROM students GROUP BY major")
+    validator.validate(q)
     rows, _ = exec_.run(q)
     
     # Convert to dict for easier checking
@@ -165,10 +171,11 @@ def test_group_by_with_count(setup_db):
 
 def test_group_by_with_multiple_aggregates(setup_db):
     """Test GROUP BY with multiple aggregate functions"""
-    _, parser, exec_ = setup_db
+    _, parser, validator, exec_ = setup_db
     
     # Get average, min, and max GPA by major
     q = parser.parse("SELECT major, AVG(gpa), MIN(gpa), MAX(gpa) FROM students GROUP BY major")
+    validator.validate(q)
     rows, _ = exec_.run(q)
     
     # Should have one row per major
@@ -184,10 +191,11 @@ def test_group_by_with_multiple_aggregates(setup_db):
 
 def test_group_by_with_order_by(setup_db):
     """Test GROUP BY with ORDER BY"""
-    _, parser, exec_ = setup_db
+    _, parser, validator, exec_ = setup_db
     
     # Get average GPA by major, ordered by the average
     q = parser.parse("SELECT major, AVG(gpa) FROM students GROUP BY major ORDER BY AVG(gpa) DESC")
+    validator.validate(q)
     rows, _ = exec_.run(q)
     
     # Check order is descending by avg GPA
@@ -200,11 +208,11 @@ def test_group_by_with_order_by(setup_db):
 # Tests for HAVING
 def test_having_clause(setup_db):
     """Test HAVING clause to filter groups"""
-    _, parser, exec_ = setup_db
+    _, parser, validator, exec_ = setup_db
     
     # Get majors with average GPA > 85
     q = parser.parse("SELECT major, AVG(gpa) FROM students GROUP BY major HAVING AVG(gpa) > 85")
-    print(f'parsed_query: {q}')
+    validator.validate(q)
     rows, _ = exec_.run(q)
     
     # Check all returned groups have avg GPA > 85
@@ -219,10 +227,11 @@ def test_having_clause(setup_db):
 
 def test_complex_having(setup_db):
     """Test HAVING with more complex conditions"""
-    _, parser, exec_ = setup_db
+    _, parser, validator, exec_ = setup_db
     
     # Get majors with average GPA > 85 and more than 1 student
     q = parser.parse("SELECT major, COUNT(*), AVG(gpa) FROM students GROUP BY major HAVING COUNT(*) > 1 AND AVG(gpa) > 85")
+    validator.validate(q)
     rows, _ = exec_.run(q)
     
     # Should only return Mathematics
@@ -234,10 +243,11 @@ def test_complex_having(setup_db):
 # Tests for LIMIT
 def test_limit_simple(setup_db):
     """Test LIMIT clause"""
-    _, parser, exec_ = setup_db
+    _, parser, validator, exec_ = setup_db
     
     # Get only first 3 students
     q = parser.parse("SELECT id, name FROM students LIMIT 3")
+    validator.validate(q)
     rows, _ = exec_.run(q)
     
     # Should return exactly 3 rows
@@ -249,10 +259,11 @@ def test_limit_simple(setup_db):
 
 def test_limit_with_order_by(setup_db):
     """Test LIMIT with ORDER BY"""
-    _, parser, exec_ = setup_db
+    _, parser, validator, exec_ = setup_db
     
     # Get the 2 youngest students
     q = parser.parse("SELECT name, age FROM students ORDER BY age LIMIT 2")
+    validator.validate(q)
     rows, _ = exec_.run(q)
     
     # Should return 2 rows
@@ -265,10 +276,11 @@ def test_limit_with_order_by(setup_db):
 
 def test_limit_exceeding_rows(setup_db):
     """Test LIMIT that exceeds available rows"""
-    _, parser, exec_ = setup_db
+    _, parser, validator, exec_ = setup_db
     
     # Try to get 10 students when only 5 exist
     q = parser.parse("SELECT id, name FROM students LIMIT 10")
+    validator.validate(q)
     rows, _ = exec_.run(q)
     
     # Should return all 5 available rows
@@ -277,7 +289,7 @@ def test_limit_exceeding_rows(setup_db):
 # Combination tests
 def test_all_features_combined(setup_db):
     """Test combining all features: WHERE, GROUP BY, HAVING, ORDER BY, LIMIT"""
-    _, parser, exec_ = setup_db
+    _, parser, validator, exec_ = setup_db
     
     # Complex query using all features
     q = parser.parse("""
@@ -289,6 +301,7 @@ def test_all_features_combined(setup_db):
         ORDER BY AVG(e.grade) DESC
         LIMIT 2
     """)
+    validator.validate(q)
     rows, _ = exec_.run(q)
     
     # Should have at most 2 rows
@@ -306,20 +319,24 @@ def test_all_features_combined(setup_db):
 
 def test_parser_errors(setup_db):
     """Test that parser catches errors correctly for new clauses"""
-    _, parser, _ = setup_db
+    _, parser, validator, _ = setup_db
     
     # Test GROUP BY without required column in SELECT
     with pytest.raises(Exception):
         parser.parse("SELECT name FROM students GROUP BY major")
+        validator.validate(q)
     
     # Test HAVING without GROUP BY
     with pytest.raises(Exception):
-        parser.parse("SELECT name FROM students HAVING COUNT(*) > 1")
+        q = parser.parse("SELECT name FROM students HAVING COUNT(*) > 1")
+        validator.validate(q)
     
     # Test negative LIMIT
     with pytest.raises(Exception):
-        parser.parse("SELECT name FROM students LIMIT -1")
+        q = parser.parse("SELECT name FROM students LIMIT -1")
+        validator.validate(q)
     
     # Test ORDER BY with invalid column
     with pytest.raises(Exception):
-        parser.parse("SELECT name FROM students ORDER BY non_existent_column") 
+        q = parser.parse("SELECT name FROM students ORDER BY non_existent_column") 
+        validator.validate(q)

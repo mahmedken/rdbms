@@ -612,11 +612,13 @@ class SortMergeJoin(Operator):
     """Sort-Merge Join implementation"""
     
     def __init__(self, left: Operator, right: Operator, 
-                 left_key: str, right_key: str):
+                 left_key: str, right_key: str, 
+                 predicate: callable = None):
         self.left = left
         self.right = right
         self.left_key = left_key
         self.right_key = right_key
+        self.predicate = predicate if predicate else lambda r: True
         self._left_rows = []
         self._right_rows = []
         self._left_idx = 0
@@ -654,53 +656,56 @@ class SortMergeJoin(Operator):
         self._current_match_start = 0
         
     def next(self):
-        # If we've exhausted either input, we're done
-        if self._left_idx >= len(self._left_rows) or self._right_idx >= len(self._right_rows):
-            return None
-        
-        # Get current rows
-        left_row = self._left_rows[self._left_idx]
-        right_row = self._right_rows[self._right_idx]
-        
-        # Get join key values
-        left_key_val = left_row.get(self.left_key)
-        right_key_val = right_row.get(self.right_key)
-        
-        # If keys match, join and advance right pointer
-        if left_key_val == right_key_val:
-            joined_row = {**left_row, **right_row}
+        while True:
+            # If we've exhausted either input, we're done
+            if self._left_idx >= len(self._left_rows) or self._right_idx >= len(self._right_rows):
+                return None
             
-            # Advance right pointer for next iteration
-            self._right_idx += 1
+            # Get current rows
+            left_row = self._left_rows[self._left_idx]
+            right_row = self._right_rows[self._right_idx]
             
-            # If we've reached the end of matching right rows, advance left pointer
-            if (self._right_idx >= len(self._right_rows) or 
-                self._right_rows[self._right_idx].get(self.right_key) != left_key_val):
+            # Get join key values
+            left_key_val = left_row.get(self.left_key)
+            right_key_val = right_row.get(self.right_key)
+            
+            # If keys match, join and check predicate
+            if left_key_val == right_key_val:
+                joined_row = {**left_row, **right_row}
+                
+                # Advance right pointer for next iteration
+                self._right_idx += 1
+                
+                # If we've reached the end of matching right rows, advance left pointer
+                if (self._right_idx >= len(self._right_rows) or 
+                    self._right_rows[self._right_idx].get(self.right_key) != left_key_val):
+                    self._left_idx += 1
+                    self._right_idx = self._current_match_start
+                    
+                    # Find the next matching group
+                    while (self._right_idx < len(self._right_rows) and 
+                          self._left_idx < len(self._left_rows) and
+                          self._right_rows[self._right_idx].get(self.right_key) < 
+                          self._left_rows[self._left_idx].get(self.left_key)):
+                        self._right_idx += 1
+                    
+                    self._current_match_start = self._right_idx
+                
+                # Apply additional predicates to the joined row
+                if self.predicate(joined_row):
+                    return joined_row
+                # Continue to next iteration if predicate failed
+                continue
+            
+            # If left key is smaller, advance left pointer
+            elif left_key_val < right_key_val:
                 self._left_idx += 1
-                self._right_idx = self._current_match_start
-                
-                # Find the next matching group
-                while (self._right_idx < len(self._right_rows) and 
-                       self._left_idx < len(self._left_rows) and
-                       self._right_rows[self._right_idx].get(self.right_key) < 
-                       self._left_rows[self._left_idx].get(self.left_key)):
-                    self._right_idx += 1
-                
-                self._current_match_start = self._right_idx
             
-            return joined_row
+            # If right key is smaller, advance right pointer
+            else:
+                self._right_idx += 1
+                self._current_match_start = self._right_idx
         
-        # If left key is smaller, advance left pointer
-        elif left_key_val < right_key_val:
-            self._left_idx += 1
-            return self.next()
-        
-        # If right key is smaller, advance right pointer
-        else:
-            self._right_idx += 1
-            self._current_match_start = self._right_idx
-            return self.next()
-    
     def close(self):
         self.left.close()
         self.right.close()
