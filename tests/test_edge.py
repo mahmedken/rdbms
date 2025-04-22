@@ -118,7 +118,6 @@ def test_simple_join_with_fk(setup_fk_tables):
     )
     validator.validate(join_query)
     rows, _ = executor.run(join_query)
-    print(rows)
     # Should return all 5 employees with their department names
     assert len(rows) == 5
     
@@ -251,7 +250,6 @@ def test_insert_multiple_values(clean_catalog, parser, validator, executor):
     select_query = parser.parse("SELECT id, name FROM multi_insert_test ORDER BY id ASC")
     validator.validate(select_query)
     rows, _ = executor.run(select_query)
-    print(rows)
     assert len(rows) == 3
     assert rows[0]["multi_insert_test.id"] == 1 and rows[0]["multi_insert_test.name"] == 'Row1'
     assert rows[1]["multi_insert_test.id"] == 2 and rows[1]["multi_insert_test.name"] == 'Row2'

@@ -19,13 +19,13 @@ def setup_db(tmp_path):
     catalog.create_table("orders", [("id", "INT"), ("person_id", "INT"), ("amount", "INT")], primary_key="id")
     people = HeapFile(catalog, data_dir, "people")
     orders = HeapFile(catalog, data_dir, "orders")
-    people.insert(1, "Alice", 25)
-    people.insert(2, "Bob", 30)
-    people.insert(3, "Charlie", 22)
-    orders.insert(100, 1, 50)
-    orders.insert(200, 2, 75)
-    orders.insert(300, 1, 25)
-    orders.insert(400, 3, 100)
+    people.insert((1, "Alice", 25))
+    people.insert((2, "Bob", 30))
+    people.insert((3, "Charlie", 22))
+    orders.insert((100, 1, 50))
+    orders.insert((200, 2, 75))
+    orders.insert((300, 1, 25))
+    orders.insert((400, 3, 100))
     
     yield catalog, parser, validator, exec_
     

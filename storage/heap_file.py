@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterator, List, Tuple
+from typing import Any, Iterator, List, Tuple, Union
 
 from catalog import Catalog
 from .buffer_manager import BufferManager, PAGE_SIZE
@@ -42,7 +42,8 @@ class HeapFile:
 
 
     # public api
-    def insert(self, *values):
+    def insert_one(self, *values):
+        """Inserts a single row into the heap file and updates the PK index."""
         if len(values) != len(self.schema.columns):
             raise ValueError("Column count mismatch")
         # basic type checks – int vs str
@@ -53,9 +54,10 @@ class HeapFile:
                 raise TypeError(f"Expected STR for {col.name}")
         # pk uniqueness via index
         if self.pk_index is not None:
-            pk_val = values[self.schema.col_names().index(self.schema.primary_key)]
+            pk_idx = self.schema.col_names().index(self.schema.primary_key)
+            pk_val = values[pk_idx]
             if self.pk_index.search(pk_val) is not None:
-                raise ValueError("Duplicate primary key")
+                raise ValueError(f"Duplicate primary key: {pk_val}")
         # append to heap file
         fp = self.dir / f"{self.table}.dat"
         with fp.open("ab") as f:
@@ -64,6 +66,100 @@ class HeapFile:
         # update index
         if self.pk_index is not None:
             self.pk_index.insert(pk_val, pos)
+        return 1 # Return 1 for single insert
+
+    def insert_many(self, values_list: List[Tuple]):
+        """Inserts multiple rows efficiently using an in-memory write buffer."""
+        BUFFER_FLUSH_THRESHOLD = 1 * 1024 * 1024  # 1MB buffer threshold
+
+        if not values_list:
+            return 0
+
+        index_updates = []
+        batch_pks = set() # Track PKs within this batch
+        pk_idx = -1
+        if self.pk_index is not None:
+            pk_idx = self.schema.col_names().index(self.schema.primary_key)
+
+        # --- Pre-validation Phase (remains the same) --- 
+        for i, values in enumerate(values_list):
+            if len(values) != len(self.schema.columns):
+                raise ValueError(f"Row {i+1}: Column count mismatch (expected {len(self.schema.columns)}, got {len(values)})")
+            for v, col in zip(values, self.schema.columns):
+                if col.type == "INT" and not isinstance(v, int):
+                    raise TypeError(f"Row {i+1}: Expected INT for {col.name}, got {type(v)}")
+                if col.type == "STR" and not isinstance(v, str):
+                    raise TypeError(f"Row {i+1}: Expected STR for {col.name}, got {type(v)}")
+            if self.pk_index is not None:
+                pk_val = values[pk_idx]
+                if pk_val in batch_pks:
+                     raise ValueError(f"Row {i+1}: Duplicate primary key within batch: {pk_val}")
+                if self.pk_index.search(pk_val) is not None:
+                     raise ValueError(f"Row {i+1}: Duplicate primary key (already exists): {pk_val}")
+                batch_pks.add(pk_val)
+
+        # --- Buffered Writing Phase --- 
+        count = 0
+        write_buffer = bytearray()
+        index_updates = [] # Re-initialize here after validation pass
+
+        fp = self.dir / f"{self.table}.dat"
+        # Get starting offset for index calculations
+        current_row_start_offset = fp.stat().st_size if fp.exists() else 0
+
+        try:
+            with fp.open("ab") as f: # Open file once in append binary mode
+                for values in values_list:
+                    # Record the offset *before* this row is logically added
+                    recorded_offset = current_row_start_offset + len(write_buffer)
+                    
+                    encoded_row = self._encode_row(values)
+                    write_buffer.extend(encoded_row)
+
+                    if self.pk_index is not None:
+                        pk_val = values[pk_idx]
+                        index_updates.append((pk_val, recorded_offset))
+                    
+                    count += 1
+
+                    # Flush buffer if it exceeds threshold
+                    if len(write_buffer) >= BUFFER_FLUSH_THRESHOLD:
+                        bytes_written = f.write(write_buffer)
+                        current_row_start_offset += bytes_written # Update base offset
+                        write_buffer.clear()
+
+                # Write any remaining data in the buffer after the loop
+                if write_buffer:
+                    bytes_written = f.write(write_buffer)
+                    # No need to update current_row_start_offset here as we're done writing
+                    write_buffer.clear()
+        except IOError as e:
+             raise RuntimeError(f"Failed to write batch to heap file: {e}")
+
+        # --- Index Update Phase --- 
+        # Update index *after* all data is successfully written
+        if self.pk_index is not None:
+            try:
+                for pk_val, pos in index_updates:
+                    self.pk_index.insert(pk_val, pos)
+            except Exception as e:
+                # Consider how to handle index update failures - potentially requires cleanup?
+                raise RuntimeError(f"Failed during batch index update: {e}")
+                
+        return count
+
+    def insert(self, data: Union[Tuple, List[Tuple]]):
+        """Inserts a single row or multiple rows based on input type."""
+        if isinstance(data, list):
+            # Check if it's a list of tuples
+            if all(isinstance(item, tuple) for item in data):
+                return self.insert_many(data)
+            else:
+                raise TypeError("Input list must contain only tuples for batch insert.")
+        elif isinstance(data, tuple):
+            return self.insert_one(*data)
+        else:
+            raise TypeError("Input must be a tuple (for single row) or a list of tuples (for multiple rows).")
 
     def scan(self) -> Iterator[Tuple[Any, ...]]:
         fp = self.dir / f"{self.table}.dat"
@@ -177,7 +273,8 @@ class HeapFile:
         
         # now safe to proceed with delete + insert
         self.delete(pk_val)
-        self.insert(*new_values)
+        # Use the unified insert method for the single new row
+        self.insert(new_values)
 
             
             

@@ -45,30 +45,30 @@ def setup_db(tmp_path):
     enrollments = HeapFile(catalog, data_dir, "enrollments")
     
     # Insert sample data for students
-    students.insert(1, "Alice", 20, "Computer Science", 85)
-    students.insert(2, "Bob", 22, "Mathematics", 90)
-    students.insert(3, "Charlie", 21, "Computer Science", 78)
-    students.insert(4, "David", 23, "Physics", 92)
-    students.insert(5, "Eva", 20, "Mathematics", 88)
+    students.insert((1, "Alice", 20, "Computer Science", 85))
+    students.insert((2, "Bob", 22, "Mathematics", 90))
+    students.insert((3, "Charlie", 21, "Computer Science", 78))
+    students.insert((4, "David", 23, "Physics", 92))
+    students.insert((5, "Eva", 20, "Mathematics", 88))
     
     # Insert sample data for courses
-    courses.insert(101, "Intro to Programming", "Computer Science", 3)
-    courses.insert(102, "Data Structures", "Computer Science", 4)
-    courses.insert(103, "Calculus I", "Mathematics", 4)
-    courses.insert(104, "Quantum Physics", "Physics", 5)
-    courses.insert(105, "Linear Algebra", "Mathematics", 3)
+    courses.insert((101, "Intro to Programming", "Computer Science", 3))
+    courses.insert((102, "Data Structures", "Computer Science", 4))
+    courses.insert((103, "Calculus I", "Mathematics", 4))
+    courses.insert((104, "Quantum Physics", "Physics", 5))
+    courses.insert((105, "Linear Algebra", "Mathematics", 3))
     
     # Insert sample data for enrollments
-    enrollments.insert(1, 1, 101, 90, "Fall 2023")
-    enrollments.insert(2, 1, 102, 85, "Fall 2023")
-    enrollments.insert(3, 2, 103, 92, "Fall 2023")
-    enrollments.insert(4, 2, 105, 88, "Fall 2023")
-    enrollments.insert(5, 3, 101, 75, "Fall 2023")
-    enrollments.insert(6, 3, 102, 80, "Fall 2023")
-    enrollments.insert(7, 4, 104, 95, "Fall 2023")
-    enrollments.insert(8, 5, 103, 85, "Fall 2023")
-    enrollments.insert(9, 5, 105, 90, "Fall 2023")
-    enrollments.insert(10, 1, 103, 82, "Spring 2023")
+    enrollments.insert((1, 1, 101, 90, "Fall 2023"))
+    enrollments.insert((2, 1, 102, 85, "Fall 2023"))
+    enrollments.insert((3, 2, 103, 92, "Fall 2023"))
+    enrollments.insert((4, 2, 105, 88, "Fall 2023"))
+    enrollments.insert((5, 3, 101, 75, "Fall 2023"))
+    enrollments.insert((6, 3, 102, 80, "Fall 2023"))
+    enrollments.insert((7, 4, 104, 95, "Fall 2023"))
+    enrollments.insert((8, 5, 103, 85, "Fall 2023"))
+    enrollments.insert((9, 5, 105, 90, "Fall 2023"))
+    enrollments.insert((10, 1, 103, 82, "Spring 2023"))
     
     yield catalog, parser, validator, exec_
     
