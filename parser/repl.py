@@ -10,7 +10,7 @@ from typing import List, Optional
 from pyparsing import ParseException
 from catalog import Catalog
 from parser import SQLParser
-from parser.validator import QueryValidator
+from validator import QueryValidator
 from engine import Executor
 
 class DatabaseREPL:
@@ -200,7 +200,6 @@ class DatabaseREPL:
             
             # Check the query type to determine how to handle it
             query_type = parsed_query.get('query_type') if isinstance(parsed_query, dict) else getattr(parsed_query, 'query_type', None)
-            
             # For DML/DQL statements, use the executor
             if query_type in ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE_TABLE', 'DROP_TABLE', 'CREATE_INDEX', 'DROP_INDEX']:
                 rows, elapsed = self.executor.run(parsed_query)

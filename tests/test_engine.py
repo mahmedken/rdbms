@@ -460,3 +460,27 @@ def test_compound_dml_operations(setup_db):
     validator.validate(q)
     rows, _ = exec_.run(q)
     assert len(rows) == 0
+
+def test_create_table(setup_db):
+    _, parser, validator, exec_ = setup_db
+    q = parser.parse("CREATE TABLE students (id INT, name STR)")
+    validator.validate(q)
+    exec_.run(q)
+    
+    q = parser.parse("SELECT * FROM students")
+    validator.validate(q)
+    rows, _ = exec_.run(q)
+    assert len(rows) == 0
+
+def test_create_table_with_primary_key(setup_db):
+    _, parser, validator, exec_ = setup_db
+    q = parser.parse("CREATE TABLE students (id INT, name STR, PRIMARY KEY (id))")
+    validator.validate(q)
+    exec_.run(q)
+    
+    q = parser.parse("SELECT * FROM students")
+    validator.validate(q)
+    rows, _ = exec_.run(q)
+    assert len(rows) == 0
+    
+    

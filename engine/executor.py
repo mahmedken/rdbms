@@ -125,6 +125,9 @@ class Executor:
     def _create_table(self, q):
         cols = [(c.name.lower(), c.type.upper()) for c in q.columns]
         pk = q.get("primary_key")
+        # Extract the actual primary key column name if it's a ParseResults object
+        if pk and hasattr(pk, "pk_column"):
+            pk = pk.pk_column
         return self._ddl_wrapper(
             lambda: self.catalog.create_table(q.table_name.lower(), cols, primary_key=pk),
             f"Table '{q.table_name}' created successfully" + (f" with primary key '{pk}'" if pk else ""),

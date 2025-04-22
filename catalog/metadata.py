@@ -127,7 +127,6 @@ class Catalog:
             if col_type.upper() not in ("INT", "STRING", "STR"):
                 raise CatalogError(f"Unsupported type: {col_type}")
             col_objs.append(Column(col_name, "INT" if col_type.upper() == "INT" else "STR"))
-
         if primary_key and primary_key.lower() not in seen:
             raise UnknownColumnError(primary_key)
 

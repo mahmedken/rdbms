@@ -400,3 +400,11 @@ def test_parse_syntax_error(clean_catalog):
     with pytest.raises(ParseException):
         q = parser.parse("SELECT FROM users")  # Missing columns
         validator.validate(q)
+
+def test_create_table_parse_with_primary_key(clean_catalog):
+    parser = SQLParser()
+    validator = QueryValidator(clean_catalog)
+    result = parser.parse("CREATE TABLE students (id INT, name STR, PRIMARY KEY (id))")
+    validator.validate(result)
+    assert result
+    
