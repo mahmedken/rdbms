@@ -226,3 +226,33 @@ def test_join_with_ordering(setup_fk_tables):
     for i, (expected_emp, expected_dept) in enumerate(expected_order):
         assert rows[i]["e.name"] == expected_emp
         assert rows[i]["d.name"] == expected_dept
+
+def test_insert_multiple_values(clean_catalog, parser, validator, executor):
+    """Test inserting multiple rows in a single INSERT statement."""
+    # Create a simple table
+    create_query_str = "CREATE TABLE multi_insert_test (id INT, name STR, PRIMARY KEY(id))"
+    create_query = parser.parse(create_query_str)
+    validator.validate(create_query)
+    executor.run(create_query)
+
+    # Insert multiple values in a single query
+    insert_query_str = "INSERT INTO multi_insert_test (id, name) VALUES (1, 'Row1'), (2, 'Row2'), (3, 'Row3')"
+    insert_query = parser.parse(insert_query_str)
+    validator.validate(insert_query)
+    executor.run(insert_query)
+
+    # Verify the count of inserted rows
+    count_query = parser.parse("SELECT COUNT(*) FROM multi_insert_test")
+    validator.validate(count_query)
+    rows, _ = executor.run(count_query)
+    assert rows[0]["COUNT(*)"] == 3
+
+    # Verify the actual inserted data
+    select_query = parser.parse("SELECT id, name FROM multi_insert_test ORDER BY id ASC")
+    validator.validate(select_query)
+    rows, _ = executor.run(select_query)
+    print(rows)
+    assert len(rows) == 3
+    assert rows[0]["multi_insert_test.id"] == 1 and rows[0]["multi_insert_test.name"] == 'Row1'
+    assert rows[1]["multi_insert_test.id"] == 2 and rows[1]["multi_insert_test.name"] == 'Row2'
+    assert rows[2]["multi_insert_test.id"] == 3 and rows[2]["multi_insert_test.name"] == 'Row3'

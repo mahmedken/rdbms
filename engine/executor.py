@@ -200,12 +200,14 @@ class Executor:
 
     def _plan_insert(self, q):
         heap = HeapFile(self.catalog, self.data_dir, q.table_name.lower())
-        values = self._align_insert_values(q, heap)
-        
-        # Validate foreign key constraints
-        self._validate_foreign_keys(q.table_name.lower(), values, heap.schema)
-        
-        return InsertOperator(heap, tuple(values))
+        aligned_values_list = []
+        for values_tuple in q.insert_values_list:
+            aligned_values = self._align_insert_values(q, heap, values_tuple)
+            # Validate foreign key constraints for each tuple
+            self._validate_foreign_keys(q.table_name.lower(), aligned_values, heap.schema)
+            aligned_values_list.append(tuple(aligned_values))
+            
+        return InsertOperator(heap, aligned_values_list)
 
     # ---- DELETE -------------------------------------------------------
 
@@ -349,14 +351,29 @@ class Executor:
     # INSERT value alignment helper
     # ------------------------------------------------------------------
 
-    def _align_insert_values(self, q, heap):
+    def _align_insert_values(self, q, heap, values_tuple):
+        """Align a single tuple of values based on specified columns or schema order."""
+        current_values = list(values_tuple)
         if getattr(q, "columns", None):
             schema_cols = heap.schema.col_names()
             ordered = [None] * len(schema_cols)
             for i, user_col in enumerate(col.lower() for col in q.columns):
-                ordered[schema_cols.index(user_col)] = q.insert_values[i]
+                try:
+                    idx = schema_cols.index(user_col)
+                    ordered[idx] = current_values[i]
+                except ValueError:
+                    raise ValueError(f"Unknown column '{user_col}' in table '{heap.table}'")
+                except IndexError:
+                     raise ValueError(f"Mismatch between number of columns specified and values provided for tuple: {values_tuple}")
+            # Check if the number of provided values matches the number of specified columns
+            if len(current_values) != len(q.columns):
+                 raise ValueError(f"Mismatch between number of columns specified ({len(q.columns)}) and values provided ({len(current_values)}) for tuple: {values_tuple}")
             return ordered
-        return list(q.insert_values)
+        else:
+            # Check if the number of provided values matches the number of schema columns
+            if len(current_values) != len(heap.schema.columns):
+                 raise ValueError(f"Number of values provided ({len(current_values)}) does not match number of columns in table '{heap.table}' ({len(heap.schema.columns)}) for tuple: {values_tuple}")
+            return current_values
 
     # ------------------------------------------------------------------
     # predicate compilation / column helpers (mostly unchanged logic)
@@ -463,7 +480,7 @@ class Executor:
     # ------------------------------------------------------------------
     
     def _validate_foreign_keys(self, table_name, values, schema):
-        """Validate that foreign key values reference existing records"""
+        """Validate that foreign key values in a single tuple reference existing records"""
         if not schema.foreign_keys:
             return
             

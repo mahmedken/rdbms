@@ -221,28 +221,31 @@ class Aggregation(Operator):
 # dml operators
 
 class InsertOperator(Operator):
-    """Insert values into a table"""
+    """Insert one or more value tuples into a table"""
     
-    def __init__(self, heap_file, values: Tuple):
+    def __init__(self, heap_file, values_list: List[Tuple]):
         """
         Initialize the insert operator
         
         Args:
             heap_file: The target HeapFile
-            values: Tuple of values to insert
+            values_list: List of value tuples to insert
         """
         self.heap = heap_file
-        self.values = values
+        self.values_list = values_list
         self._executed = False
         self._result = None
         
     def open(self):
         if not self._executed:
-            # Insert the values into the heap file
-            self.heap.insert(*self.values)
+            count = 0
+            # Insert each tuple from the list into the heap file
+            for values in self.values_list:
+                self.heap.insert(*values)
+                count += 1
             self._executed = True
-            # Return a result indicating the insert was successful
-            self._result = {"operation": "INSERT", "rows_affected": 1}
+            # Return a result indicating the number of rows inserted
+            self._result = {"operation": "INSERT", "rows_affected": count}
         
     def next(self):
         if self._result:

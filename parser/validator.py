@@ -86,12 +86,20 @@ class QueryValidator:
 
     def _insert(self, q):
         sch = self._schema(q.table_name)
-        cols = [c.lower() for c in (q.columns or sch.col_names())]
-        if len(cols) != len(q.insert_values):
-            raise ParseException("column/value count mismatch")
-        for c in cols:
-            if c not in sch.col_names():
-                raise ParseException(f"unknown column {c}")
+        # Determine the list of columns (explicit or implicit from schema)
+        target_cols = [c.lower() for c in (q.columns or sch.col_names())]
+        
+        # Check if specified columns exist in the schema
+        if q.columns: # Only check if columns were explicitly provided
+            for c in target_cols:
+                if c not in sch.col_names():
+                    raise ParseException(f"unknown column {c}")
+
+        # Validate each tuple in the values list
+        for values_tuple in q.insert_values_list:
+            if len(target_cols) != len(values_tuple):
+                raise ParseException(f"column/value count mismatch for tuple {values_tuple}: expected {len(target_cols)}, got {len(values_tuple)}")
+            # TODO: Add type validation for each value against target_cols types if needed
 
     def _update(self, q):
         sch = self._schema(q.table_name)

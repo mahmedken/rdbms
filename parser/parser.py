@@ -76,7 +76,7 @@ select_stmt = (
 # DDL + DML helpers
 # ---------------------------------------------------------------------------
 
-values_list = Suppress("(") + delimitedList(literal)("insert_values") + Suppress(")")
+value_tuple = Suppress("(") + delimitedList(literal) + Suppress(")")
 column_list = Suppress("(") + delimitedList(ident)("columns") + Suppress(")")
 
 def _tag(qtype):
@@ -88,7 +88,7 @@ insert_stmt = (
     + ident("table_name")
     + Optional(column_list)
     + CaselessKeyword("VALUES")
-    + values_list
+    + delimitedList(Group(value_tuple))("insert_values_list")
 ).setParseAction(_tag("INSERT"))
 
 update_assign = Group(ident("column") + Suppress("=") + literal("value"))
