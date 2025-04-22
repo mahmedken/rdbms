@@ -113,6 +113,16 @@ STR = CaselessKeyword("STR")
 datatype = INT("type") | STR("type")
 col_def = Group(ident("name") + datatype)
 pk_def = Group(CaselessKeyword("PRIMARY") + CaselessKeyword("KEY") + Suppress("(") + ident("pk_column") + Suppress(")"))("primary_key")
+
+# Foreign key definition
+fk_def = Group(
+    CaselessKeyword("FOREIGN") + CaselessKeyword("KEY") 
+    + Suppress("(") + ident("local_column") + Suppress(")") 
+    + CaselessKeyword("REFERENCES") + ident("ref_table") 
+    + Suppress("(") + ident("ref_column") + Suppress(")")
+)("foreign_key")
+
+# Allow multiple foreign key constraints in a create table statement
 create_table_stmt = (
     CaselessKeyword("CREATE")
     + CaselessKeyword("TABLE")
@@ -120,6 +130,7 @@ create_table_stmt = (
     + Suppress("(")
     + delimitedList(col_def)("columns")
     + Optional(Suppress(",") + pk_def)
+    + Optional(Suppress(",") + delimitedList(fk_def)("foreign_keys"))
     + Suppress(")")
 ).setParseAction(_tag("CREATE_TABLE"))
 

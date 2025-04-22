@@ -117,6 +117,27 @@ class QueryValidator:
             raise ParseException("duplicate column")
         if "primary_key" in q and q.primary_key.pk_column.lower() not in cols:
             raise ParseException("primary key column not found")
+            
+        # Validate foreign keys if present
+        if "foreign_keys" in q:
+            for fk in q.foreign_keys:
+                # Check local column exists in table definition
+                if fk.local_column.lower() not in cols:
+                    raise ParseException(f"foreign key column {fk.local_column} not found in table definition")
+                
+                # Check the referenced table exists
+                try:
+                    ref_schema = self._schema(fk.ref_table.lower())
+                except UnknownTableError:
+                    raise ParseException(f"referenced table {fk.ref_table} does not exist")
+                
+                # Check the referenced column exists in the referenced table
+                if fk.ref_column.lower() not in ref_schema.col_names():
+                    raise ParseException(f"referenced column {fk.ref_column} not found in {fk.ref_table}")
+                
+                # Check that the referenced column is a primary key or has an index
+                if ref_schema.primary_key != fk.ref_column.lower() and fk.ref_column.lower() not in ref_schema.indexes:
+                    raise ParseException(f"referenced column {fk.ref_column} is not indexed in {fk.ref_table}")
 
     def _drop_table(self, q):
         try:

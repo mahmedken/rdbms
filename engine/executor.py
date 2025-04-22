@@ -128,9 +128,23 @@ class Executor:
         # Extract the actual primary key column name if it's a ParseResults object
         if pk and hasattr(pk, "pk_column"):
             pk = pk.pk_column
+            
+        # Process foreign keys if present
+        foreign_keys = {}
+        if hasattr(q, "foreign_keys") and q.foreign_keys:
+            for fk in q.foreign_keys:
+                foreign_keys[fk.local_column.lower()] = (fk.ref_table.lower(), fk.ref_column.lower())
+        
         return self._ddl_wrapper(
-            lambda: self.catalog.create_table(q.table_name.lower(), cols, primary_key=pk),
-            f"Table '{q.table_name}' created successfully" + (f" with primary key '{pk}'" if pk else ""),
+            lambda: self.catalog.create_table(
+                q.table_name.lower(), 
+                cols, 
+                primary_key=pk,
+                foreign_keys=foreign_keys
+            ),
+            f"Table '{q.table_name}' created successfully" + 
+            (f" with primary key '{pk}'" if pk else "") +
+            (f" and {len(foreign_keys)} foreign key(s)" if foreign_keys else ""),
         )
 
     def _drop_table(self, q):
@@ -187,6 +201,10 @@ class Executor:
     def _plan_insert(self, q):
         heap = HeapFile(self.catalog, self.data_dir, q.table_name.lower())
         values = self._align_insert_values(q, heap)
+        
+        # Validate foreign key constraints
+        self._validate_foreign_keys(q.table_name.lower(), values, heap.schema)
+        
         return InsertOperator(heap, tuple(values))
 
     # ---- DELETE -------------------------------------------------------
@@ -195,6 +213,10 @@ class Executor:
         heap = HeapFile(self.catalog, self.data_dir, q.table_name.lower())
         scan = TableScan(heap, q.table_name.lower())
         child = Selection(scan, self._compile_pred(q.where, {q.table_name.lower(): scan})) if "where" in q else scan
+        
+        # Validate that this deletion doesn't break foreign key constraints
+        self._validate_no_references(q.table_name.lower(), child)
+        
         return DeleteOperator(child, heap)
 
     # ---- UPDATE -------------------------------------------------------
@@ -204,6 +226,14 @@ class Executor:
         scan = TableScan(heap, q.table_name.lower())
         child = Selection(scan, self._compile_pred(q.where, {q.table_name.lower(): scan})) if "where" in q else scan
         updates = {a.column.lower(): a.value for a in q.assignments}
+        
+        # Validate foreign key constraints for updated columns
+        schema = heap.schema
+        for local_col, value in updates.items():
+            if schema.foreign_keys and local_col in schema.foreign_keys:
+                ref_table, ref_col = schema.foreign_keys[local_col]
+                self._validate_fk_value(ref_table, ref_col, value)
+        
         return UpdateOperator(child, heap, updates)
 
     # ------------------------------------------------------------------
@@ -427,3 +457,83 @@ class Executor:
                 cond[2], left_alias, right_alias
             )
         return None
+
+    # ------------------------------------------------------------------
+    # Foreign key validation helpers
+    # ------------------------------------------------------------------
+    
+    def _validate_foreign_keys(self, table_name, values, schema):
+        """Validate that foreign key values reference existing records"""
+        if not schema.foreign_keys:
+            return
+            
+        col_names = schema.col_names()
+        for idx, col_name in enumerate(col_names):
+            if col_name in schema.foreign_keys and values[idx] is not None:
+                ref_table, ref_col = schema.foreign_keys[col_name]
+                self._validate_fk_value(ref_table, ref_col, values[idx])
+                
+    def _validate_fk_value(self, ref_table, ref_col, value):
+        """Validate that a foreign key value exists in the referenced table"""
+        ref_heap = HeapFile(self.catalog, self.data_dir, ref_table)
+        ref_scan = TableScan(ref_heap, ref_table)
+        
+        # Look for a matching record in the referenced table
+        ref_scan.open()
+        found = False
+        while (row := ref_scan.next()) is not None:
+            if row.get(f"{ref_table}.{ref_col}") == value:
+                found = True
+                break
+        ref_scan.close()
+        
+        if not found:
+            raise ValueError(f"Foreign key constraint violation: value '{value}' not found in {ref_table}.{ref_col}")
+            
+    def _validate_no_references(self, table_name, child_op):
+        """Validate that the records being deleted aren't referenced by foreign keys"""
+        # Find all tables that reference this table
+        referencing_tables = []
+        for other_table in self.catalog.list_tables():
+            if other_table == table_name:
+                continue
+                
+            schema = self.catalog.get_schema(other_table)
+            if not schema.foreign_keys:
+                continue
+                
+            for local_col, (ref_table, ref_col) in schema.foreign_keys.items():
+                if ref_table == table_name:
+                    referencing_tables.append((other_table, local_col, ref_col))
+        
+        if not referencing_tables:
+            return
+            
+        # Get the rows that are about to be deleted
+        deleted_rows = []
+        child_op.open()
+        while (row := child_op.next()) is not None:
+            deleted_rows.append(row)
+        child_op.close()
+        
+        # Check each referencing table to see if it references any of the rows being deleted
+        for other_table, local_col, ref_col in referencing_tables:
+            other_heap = HeapFile(self.catalog, self.data_dir, other_table)
+            other_scan = TableScan(other_heap, other_table)
+            
+            for deleted_row in deleted_rows:
+                deleted_value = deleted_row.get(f"{table_name}.{ref_col}")
+                
+                # Skip None values
+                if deleted_value is None:
+                    continue
+                    
+                other_scan.open()
+                while (row := other_scan.next()) is not None:
+                    if row.get(f"{other_table}.{local_col}") == deleted_value:
+                        other_scan.close()
+                        raise ValueError(
+                            f"Foreign key constraint violation: Cannot delete row from {table_name} "
+                            f"with {ref_col}={deleted_value} because it is referenced by {other_table}.{local_col}"
+                        )
+                other_scan.close()
