@@ -110,9 +110,7 @@ class HeapFile:
         try:
             with fp.open("ab") as f: # Open file once in append binary mode
                 for values in values_list:
-                    # Record the offset *before* this row is logically added
                     recorded_offset = current_row_start_offset + len(write_buffer)
-                    
                     encoded_row = self._encode_row(values)
                     write_buffer.extend(encoded_row)
 
@@ -122,29 +120,27 @@ class HeapFile:
                     
                     count += 1
 
-                    # Flush buffer if it exceeds threshold
                     if len(write_buffer) >= BUFFER_FLUSH_THRESHOLD:
                         bytes_written = f.write(write_buffer)
-                        current_row_start_offset += bytes_written # Update base offset
+                        current_row_start_offset += bytes_written
                         write_buffer.clear()
-
-                # Write any remaining data in the buffer after the loop
-                if write_buffer:
+                
+                if write_buffer: # Write remaining buffer
                     bytes_written = f.write(write_buffer)
-                    # No need to update current_row_start_offset here as we're done writing
                     write_buffer.clear()
         except IOError as e:
              raise RuntimeError(f"Failed to write batch to heap file: {e}")
 
         # --- Index Update Phase --- 
-        # Update index *after* all data is successfully written
-        if self.pk_index is not None:
+        if self.pk_index is not None and index_updates:
             try:
-                for pk_val, pos in index_updates:
-                    self.pk_index.insert(pk_val, pos)
+                # Call the batch index update method
+                self.pk_index.insert_many(index_updates)
             except Exception as e:
-                # Consider how to handle index update failures - potentially requires cleanup?
-                raise RuntimeError(f"Failed during batch index update: {e}")
+                # If index update fails, the data file is already modified.
+                # Proper handling might involve trying to truncate the data file 
+                # or marking the table as inconsistent. Raising error for now.
+                raise RuntimeError(f"Failed during batch index update: {e}. Data file may be inconsistent.")
                 
         return count
 
