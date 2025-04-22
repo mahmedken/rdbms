@@ -7,8 +7,10 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+from pyparsing import ParseException
 from catalog import Catalog
 from parser import SQLParser
+from parser.validator import QueryValidator
 from engine import Executor
 
 class DatabaseREPL:
@@ -19,7 +21,8 @@ class DatabaseREPL:
         self.data_dir = data_dir
         self.history_file = os.path.expanduser("~/.db_repl_history")
         self.catalog = Catalog()
-        self.parser = SQLParser(self.catalog)
+        self.parser = SQLParser()
+        self.validator = QueryValidator(self.catalog)
         self.executor = Executor(self.catalog, self.data_dir)
         
         # create data directory if it doesn't exist
@@ -172,9 +175,28 @@ class DatabaseREPL:
             
         # process SQL query
         try:
-            # Parse the SQL query
+            # Parse the SQL query - now using separate parse and validate steps
             start_time = time.perf_counter()
-            parsed_query = self.parser.parse(command)
+            
+            # First, parse the SQL syntax
+            try:
+                parsed_query = self.parser.parse(command)
+            except ParseException as e:
+                print(f"Syntax error: {e}")
+                return True
+            except Exception as e:
+                print(f"Error parsing query: {e}")
+                return True
+                
+            # Then, validate the semantics
+            try:
+                self.validator.validate(parsed_query)
+            except ParseException as e:
+                print(f"Validation error: {e}")
+                return True
+            except Exception as e:
+                print(f"Error validating query: {e}")
+                return True
             
             # Check the query type to determine how to handle it
             query_type = parsed_query.get('query_type') if isinstance(parsed_query, dict) else getattr(parsed_query, 'query_type', None)

@@ -2,8 +2,10 @@ from flask import Flask, render_template, request, jsonify
 import os
 import time
 from pathlib import Path
+from pyparsing import ParseException
 from catalog import Catalog
 from parser import SQLParser
+from parser.validator import QueryValidator
 from engine import Executor
 
 app = Flask(__name__)
@@ -12,7 +14,8 @@ app = Flask(__name__)
 DATA_DIR = "./data"
 Path(DATA_DIR).mkdir(exist_ok=True)
 catalog = Catalog()
-parser = SQLParser(catalog)
+parser = SQLParser()
+validator = QueryValidator(catalog)
 executor = Executor(catalog, DATA_DIR)
 
 @app.route('/')
@@ -49,7 +52,22 @@ def execute_query():
     # Process SQL query
     try:
         start_time = time.perf_counter()
-        parsed_query = parser.parse(query)
+        
+        # First, parse the SQL syntax
+        try:
+            parsed_query = parser.parse(query)
+        except ParseException as e:
+            return jsonify({'error': f"Syntax error: {e}"})
+        except Exception as e:
+            return jsonify({'error': f"Error parsing query: {e}"})
+            
+        # Then, validate the semantics
+        try:
+            validator.validate(parsed_query)
+        except ParseException as e:
+            return jsonify({'error': f"Validation error: {e}"})
+        except Exception as e:
+            return jsonify({'error': f"Error validating query: {e}"})
         
         query_type = parsed_query.get('query_type') if isinstance(parsed_query, dict) else getattr(parsed_query, 'query_type', None)
         
