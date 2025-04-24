@@ -29,7 +29,7 @@ SELECT COUNT(*), MIN(value), MAX(value), SUM(value), AVG(value) FROM demo_1m_seq
 SELECT value, COUNT(*) FROM demo_1m_const GROUP BY value;
 
 -- Group by value on the sequential table (each value is unique, so 1M groups if no WHERE)
--- Let's filter first to make it manageable
+-- Filter first to make it manageable
 SELECT value, COUNT(*) FROM demo_1m_seq WHERE id < 10 GROUP BY value;
 
 -- Group by a calculated value and filter groups with HAVING
