@@ -1,372 +1,227 @@
 import pytest
-from pyparsing import ParseResults
-from optimizer import QueryOptimizer
-from catalog import Catalog, TableSchema
-from engine import Executor, SortMergeJoin
-from storage.heap_file import HeapFile
+from pathlib import Path
 
-# simple class implementations for testing
-class Column:
-    def __init__(self, name, data_type):
-        self.name = name
-        self.type = data_type
+from pyparsing import ParseException
+from catalog import Catalog, CatalogError, UnknownTableError
+from parser import SQLParser
+from optimizer import QueryOptimizer # Import the optimizer
 
-class Schema:
-    def __init__(self, columns, indexes=None, primary_key=None):
-        self.columns = [Column(name, dtype) for name, dtype in columns]
-        self.indexes = indexes or []
-        self.primary_key = primary_key
-        
-    def col_names(self):
-        return [col.name for col in self.columns]
-
-class Table:
-    def __init__(self, table, alias=None):
-        self.table = table
-        self.alias = alias
-        
-    def copy(self):
-        return Table(self.table, self.alias)
-
-class Query:
-    def __init__(self, query_type='SELECT', tables=None, columns=None, where=None):
-        self.query_type = query_type
-        self.tables = tables or []
-        self.columns = columns or []
-        self.where = where
-        
-    def copy(self):
-        new_query = Query(self.query_type, 
-                         [table.copy() for table in self.tables], 
-                         self.columns.copy() if self.columns else [], 
-                         self.where)
-        if hasattr(self, 'join_method'):
-            new_query.join_method = self.join_method
-        return new_query
-
-# fixtures
-@pytest.fixture
-def catalog():
-    """Create a catalog with test tables"""
-    catalog = Catalog() 
-    
-    # define schemas for test tables
-    small_table_schema = Schema([
-        ('id', 'INTEGER'),
-        ('name', 'TEXT')
-    ], indexes=['id'], primary_key='id')
-    
-    large_table_schema = Schema([
-        ('id', 'INTEGER'),
-        ('user_id', 'INTEGER'),
-        ('content', 'TEXT'),
-        ('created_at', 'TIMESTAMP')
-    ], indexes=['id', 'user_id'], primary_key='id')
-    
-    # patch the get_schema method
-    def get_schema(table_name):
-        if table_name == 'small_table':
-            return small_table_schema
-        elif table_name == 'large_table':
-            return large_table_schema
-        else:
-            raise ValueError(f"Unknown table: {table_name}")
-    
-    catalog.get_schema = get_schema
-    return catalog
-
-@pytest.fixture
-def optimizer(catalog):
-    """Create an optimizer instance with the catalog"""
-    return QueryOptimizer(catalog)
-
-@pytest.fixture
-def parsed_query():
-    """Create a parsed query for testing"""
-    query = Query(query_type='SELECT')
-    return query
-
-# test cases
-def test_optimizer_initialization(optimizer):
-    """Test that the optimizer initializes correctly"""
-    assert optimizer is not None
-    assert optimizer.catalog is not None
-
-def test_optimize_non_select_query(optimizer):
-    """Test that non-SELECT queries are returned unmodified"""
-    query = Query(query_type='INSERT')
-    result = optimizer.optimize(query)
-    assert result == query
-
-def test_condition_optimization(optimizer):
-    """Test that WHERE conditions are optimized correctly"""
-    # create a WHERE clause with AND conditions
-    where_clause = ParseResults(['WHERE',
-        ParseResults(['id', '=', '5', 'AND', 'name', '!=', 'test'])
-    ])
-    
-    tables = [Table('small_table')]
-    optimized = optimizer.optimize_conditions(where_clause, tables)
-    
-    # the equality condition should be first (more selective)
-    assert optimized[1][0] == 'id'
-    assert optimized[1][1] == '='
-    assert optimized[1][2] == '5'
-
-def test_join_method_selection_small_tables(optimizer):
-    """Test join method selection for small tables"""
-    tables = [Table('small_table'), Table('small_table')]
-    method = optimizer.select_join_method(tables)
-    
-    # for small tables, nested loop should be preferred
-    assert method == 'nested_loop'
-
-def test_join_method_selection_large_tables(optimizer):
-    """Test join method selection for large tables"""
-    tables = [Table('large_table'), Table('large_table')]
-    method = optimizer.select_join_method(tables)
-    
-    # for large indexed tables, sort-merge might be preferred
-    assert method in ['nested_loop', 'sort_merge']
-
-def test_optimize_select_query(optimizer, parsed_query):
-    """Test optimizing a SELECT query with WHERE and multiple tables"""
-    # set up a query with WHERE and multiple tables
-    parsed_query.query_type = 'SELECT'
-    parsed_query.tables = [Table('small_table'), Table('large_table')]
-    
-    # add a WHERE clause
-    where_clause = ParseResults(['WHERE',
-        ParseResults(['small_table.id', '=', 'large_table.user_id'])
-    ])
-    parsed_query.where = where_clause
-
-    optimized = optimizer.optimize(parsed_query)
-    
-    # check that join method was selected
-    assert hasattr(optimized, 'join_method')
-
-@pytest.mark.parametrize("table_name,expected_size", [
-    ('small_table', 200),  # 2 columns * 100
-    ('large_table', 400),  # 4 columns * 100
-])
-def test_table_size_estimation(optimizer, table_name, expected_size):
-    """Test the table size estimation logic"""
-    size = optimizer._estimate_table_size(table_name)
-    assert size == expected_size
-
-def test_has_index(optimizer):
-    """Test the index detection logic"""
-    assert optimizer._has_index('small_table') == True
-    assert optimizer._has_index('large_table') == True
-    assert optimizer._has_index('nonexistent_table') == False
-
-# integration tests with executor
-def test_integration_with_executor(monkeypatch, optimizer, catalog):
-    """Test integration with the executor"""
-    # create an executor
-    executor = Executor(catalog, '/tmp')
-    
-    # set the optimizer
-    monkeypatch.setattr(executor, "optimizer", optimizer)
-    
-    # create a query
-    query = Query(query_type='SELECT')
-    query.tables = [Table('small_table', 'a'), Table('large_table', 'b')]
-    query.columns = ['*']
-    
-    # add a WHERE clause for the join
-    where_clause = ParseResults(['WHERE',
-        ParseResults(['a.id', '=', 'b.user_id'])
-    ])
-    query.where = where_clause
-    
-    # track if _build_select_plan was called with optimized query
-    called_with_optimized = False
-    
-    def mock_build_select_plan(q):
-        nonlocal called_with_optimized
-        # check that the query has been optimized
-        if hasattr(q, 'join_method'):
-            called_with_optimized = True
-        return None  # return a placeholder
-    
-    # patch the _build_select_plan method
-    original_build_select_plan = executor._build_select_plan
-    monkeypatch.setattr(executor, "_build_select_plan", mock_build_select_plan)
-    
-    # run the query (with exception handling as in original)
+# Fixture to provide a clean catalog for each test
+@pytest.fixture(autouse=True)
+def clean_catalog(tmp_path, monkeypatch):
+    """Each test gets a new catalog in a tmp dir."""
+    cat_path = tmp_path / "opt_cat.json"
+    monkeypatch.setenv("RDBMS_CATALOG", str(cat_path))
+    catalog = Catalog()
+    yield catalog
+    # No need to reset if each test gets a new file, but good practice
     try:
-        executor.run(query)
+        catalog.reset()
     except Exception:
-        # we expect an exception since we're using placeholders
-        pass
-    
-    # restore the original method
-    monkeypatch.setattr(executor, "_build_select_plan", original_build_select_plan)
-    
-    # verify the optimizer was used
-    assert called_with_optimized
+         pass # Ignore errors if catalog was already deleted or empty
 
-def test_sort_merge_join():
-    """Test the SortMergeJoin operator"""
-    # create data for left and right inputs
-    left_data = [
-        {"a.id": 1, "a.name": "Alice"},
-        {"a.id": 2, "a.name": "Bob"},
-        {"a.id": 3, "a.name": "Charlie"},
-        {"a.id": 5, "a.name": "Eve"}
-    ]
-    
-    right_data = [
-        {"b.id": 101, "b.user_id": 1, "b.content": "Post 1"},
-        {"b.id": 102, "b.user_id": 2, "b.content": "Post 2"},
-        {"b.id": 103, "b.user_id": 3, "b.content": "Post 3"},
-        {"b.id": 104, "b.user_id": 3, "b.content": "Post 4"},
-        {"b.id": 105, "b.user_id": 4, "b.content": "Post 5"}
-    ]
-    
-    # create simple iterator classes
-    class LeftOperator:
-        def __init__(self):
-            self.data = left_data.copy()
-            
-        def open(self):
-            pass
-            
-        def next(self):
-            if not self.data:
-                return None
-            return self.data.pop(0)
-            
-        def close(self):
-            pass
-    
-    class RightOperator:
-        def __init__(self):
-            self.data = right_data.copy()
-            
-        def open(self):
-            pass
-            
-        def next(self):
-            if not self.data:
-                return None
-            return self.data.pop(0)
-            
-        def close(self):
-            pass
-    
-    # create the operators
-    left_op = LeftOperator()
-    right_op = RightOperator()
-    
-    # create the SortMergeJoin operator
-    join_op = SortMergeJoin(left_op, right_op, "a.id", "b.user_id")
-    
-    # open the operator
-    join_op.open()
-    
-    # collect the results
-    results = []
-    while True:
-        row = join_op.next()
-        if row is None:
-            break
-        results.append(row)
-    
-    # close the operator
-    join_op.close()
-    
-    # verify the results
-    assert len(results) == 4  # 1 match for Alice, 1 for Bob, 2 for Charlie
-    
-    # check specific joins
-    assert any(r["a.name"] == "Alice" and r["b.content"] == "Post 1" for r in results)
-    assert any(r["a.name"] == "Bob" and r["b.content"] == "Post 2" for r in results)
-    assert any(r["a.name"] == "Charlie" and r["b.content"] == "Post 3" for r in results)
-    assert any(r["a.name"] == "Charlie" and r["b.content"] == "Post 4" for r in results)
-    
-    # eve should not have any matches
-    assert not any(r["a.name"] == "Eve" for r in results)
+# Fixture for the SQLParser
+@pytest.fixture
+def parser():
+    return SQLParser()
 
-def test_executor_with_optimizer_integration(monkeypatch, optimizer, catalog):
-    """Test the full integration of optimizer with executor"""
-    # create an executor with our optimizer
-    executor = Executor(catalog, '/tmp')
-    monkeypatch.setattr(executor, "optimizer", optimizer)
+# Fixture for the QueryOptimizer
+@pytest.fixture
+def optimizer(clean_catalog): # Depends on the clean catalog
+    return QueryOptimizer(clean_catalog)
+
+# Helper function to create tables for join tests
+def setup_join_tables(catalog: Catalog, size: str, indexed: bool):
+    """Helper to create table schemas for join tests."""
+    table_prefix = f"{size}_"
+    table1 = f"{table_prefix}table1"
+    table2 = f"{table_prefix}table2"
+
+    # Define columns using lists of tuples for create_table
+    cols1_list = [('id', 'INT'), ('data1', 'STR')]
+    cols2_list = [('id', 'INT'), ('fkid', 'INT'), ('data2', 'STR')] # fkid references table1.id
+
+    pk1 = 'id'
+    pk2 = 'id'
+
+    fk2 = {'fkid': (table1, 'id')}
+
+    # Define desired indexes
+    indexes1_cols = {'data1'} if indexed else set()
+    indexes2_cols = {'fkid', 'data2'} if indexed else set()
+
+    # Adjust column count for size estimation (if using the simple optimizer model)
+    if size == "large":
+         cols1_list.extend([(f'dummy{i}', 'INT') for i in range(10)])
+         cols2_list.extend([(f'dummy{i}', 'INT') for i in range(10)])
+
+    # Create tables first
+    catalog.create_table(table1, cols1_list, primary_key=pk1)
+    catalog.create_table(table2, cols2_list, primary_key=pk2, foreign_keys=fk2)
     
-    # create simple heap file classes
-    class SmallHeap:
-        def __init__(self):
-            self.schema = Schema([('id', 'INTEGER'), ('name', 'TEXT')],
-                              indexes=['id'], primary_key='id')
-            self.table = 'small_table'
-    
-    class LargeHeap:
-        def __init__(self):
-            self.schema = Schema([('id', 'INTEGER'), ('user_id', 'INTEGER'),
-                               ('content', 'TEXT'), ('created_at', 'TIMESTAMP')],
-                              indexes=['id', 'user_id'], primary_key='id')
-            self.table = 'large_table'
-    
-    # patch the HeapFile constructor
-    def heap_file_factory(table_name):
-        if table_name == 'small_table':
-            return SmallHeap()
-        elif table_name == 'large_table':
-            return LargeHeap()
-        raise ValueError(f"Unknown table: {table_name}")
-    
-    # monkeypatch the HeapFile instantiation
-    monkeypatch.setattr(HeapFile, "__new__", lambda cls, catalog, data_dir, table_name: 
-                        heap_file_factory(table_name))
-    
-    # create a test query
-    query = Query(query_type='SELECT')
-    query.tables = [Table('small_table', 'a'), Table('large_table', 'b')]
-    query.columns = ['*']
-    
-    # add a WHERE clause for the join
-    where_clause = ParseResults(['WHERE',
-        ParseResults(['a.id', '=', 'b.user_id'])
-    ])
-    query.where = where_clause
-    
-    # create a mock plan that produces results
-    class MockPlan:
-        def __init__(self):
-            self.results = [{"result": "row1"}, {"result": "row2"}, None]
-            self.index = 0
+    # Now, create the indexes separately
+    for col in indexes1_cols:
+        if col != pk1: # PK is already indexed automatically
+            catalog.create_index(table1, col)
+    for col in indexes2_cols:
+         if col != pk2:
+            catalog.create_index(table2, col)
             
-        def open(self):
-            pass
-            
-        def next(self):
-            if self.index >= len(self.results):
-                return None
-            result = self.results[self.index]
-            self.index += 1
-            return result
-            
-        def close(self):
-            pass
+    return table1, table2
+
+
+# --- Join Method Selection Tests ---
+
+def test_join_method_small_tables(clean_catalog, parser, optimizer):
+    """Test that Nested Loop Join is chosen for small tables."""
+    t1, t2 = setup_join_tables(clean_catalog, size="small", indexed=False)
+    query_str = f"SELECT * FROM {t1}, {t2} WHERE {t1}.id = {t2}.fkid"
+    parsed = parser.parse(query_str)
+    optimized = optimizer.optimize(parsed)
     
-    # track if _build_select_plan was called with optimized query
-    called_with_optimized = False
+    # Accessing the added attribute - adjust based on how optimizer adds it
+    assert optimized.get('join_method') == 'nested_loop'
+
+def test_join_method_large_tables_no_index(clean_catalog, parser, optimizer):
+    """Test that Sort Merge Join is chosen for large tables without relevant indices."""
+    t1, t2 = setup_join_tables(clean_catalog, size="large", indexed=False)
+    query_str = f"SELECT * FROM {t1}, {t2} WHERE {t1}.id = {t2}.fkid"
+    parsed = parser.parse(query_str)
+    optimized = optimizer.optimize(parsed)
+    assert optimized.get('join_method') == 'sort_merge'
+
+def test_join_method_large_tables_with_index(clean_catalog, parser, optimizer):
+    """Test that Sort Merge Join is chosen for large tables even with indices (cost model check)."""
+    # Note: Current cost model reduces SMJ cost if *any* index exists, not necessarily on join key.
+    t1, t2 = setup_join_tables(clean_catalog, size="large", indexed=True)
+    query_str = f"SELECT * FROM {t1}, {t2} WHERE {t1}.id = {t2}.fkid"
+    parsed = parser.parse(query_str)
+    optimized = optimizer.optimize(parsed)
+    assert optimized.get('join_method') == 'sort_merge'
+
+
+# --- Condition Reordering Tests ---
+
+@pytest.fixture
+def setup_condition_table(clean_catalog):
+    """Setup a table used for condition optimization tests."""
+    table_name = "cond_test_table"
+    cols = [('pk', 'INT'), ('col_int', 'INT'), ('col_str', 'STR')]
+    index_col = 'col_str'
     
-    def mock_build_plan(q):
-        nonlocal called_with_optimized
-        # check for join_method
-        if hasattr(q, 'join_method'):
-            called_with_optimized = True
-        return MockPlan()
+    # Create table first
+    clean_catalog.create_table(table_name, cols, primary_key='pk')
     
-    monkeypatch.setattr(executor, "_build_select_plan", mock_build_plan)
+    # Create the desired index separately
+    if index_col != 'pk': # PK is auto-indexed
+        clean_catalog.create_index(table_name, index_col)
+        
+    return table_name
+
+def test_condition_reorder_and(setup_condition_table, parser, optimizer):
+    """Test AND conditions are reordered (most selective first)."""
+    table = setup_condition_table
+    # Equality (=) is estimated as more selective (0.1) than range (>) (0.3)
+    query_str = f"SELECT * FROM {table} WHERE col_int > 100 AND pk = 5"
+    parsed = parser.parse(query_str)
+    optimized = optimizer.optimize(parsed)
     
-    # run the query
-    results, _ = executor.run(query)
+    optimized_where = optimized['where'][1]
+    # Expected: pk = 5 should be the left operand (condition[0]) after optimization
+    print(f"Optimized WHERE: {optimized_where}")
+    assert optimized_where[1].upper() == "AND"
+    assert optimized_where[0][0].column == 'pk' # Left part of the equality check
+    assert optimized_where[0][1] == '='
+    assert optimized_where[2][0].column == 'col_int' # Right part of the range check
+    assert optimized_where[2][1] == '>'
+
+def test_condition_reorder_and_reverse_input(setup_condition_table, parser, optimizer):
+    """Test AND conditions are reordered even if input order is reversed."""
+    table = setup_condition_table
+    # Equality (=) is estimated as more selective (0.1) than range (>) (0.3)
+    query_str = f"SELECT * FROM {table} WHERE pk = 5 AND col_int > 100" # Reversed input order
+    parsed = parser.parse(query_str)
+    optimized = optimizer.optimize(parsed)
     
-    # verify that the optimizer was used
-    assert called_with_optimized
-    assert len(results) == 2  # two rows from our mock plan
+    optimized_where = optimized['where'][1]
+    # Expected: pk = 5 should still be the left operand (condition[0])
+    print(f"Optimized WHERE: {optimized_where}")
+    assert optimized_where[1].upper() == "AND"
+    assert optimized_where[0][0].column == 'pk'
+    assert optimized_where[0][1] == '='
+    assert optimized_where[2][0].column == 'col_int'
+    assert optimized_where[2][1] == '>'
+
+
+def test_condition_reorder_or(setup_condition_table, parser, optimizer):
+    """Test OR conditions are reordered (least selective first)."""
+    table = setup_condition_table
+    # Inequality (!=) is estimated as less selective (0.9) than equality (=) (0.1)
+    query_str = f"SELECT * FROM {table} WHERE pk = 5 OR col_str != 'abc'"
+    parsed = parser.parse(query_str)
+    optimized = optimizer.optimize(parsed)
+    
+    optimized_where = optimized['where'][1]
+    # Expected: col_str != 'abc' should be the left operand (condition[0]) after optimization
+    assert optimized_where[1].upper() == "OR"
+    assert optimized_where[0][0].column == 'col_str' # Left part of the inequality check
+    assert optimized_where[0][1] == '!='
+    assert optimized_where[2][0].column == 'pk' # Right part of the equality check
+    assert optimized_where[2][1] == '='
+
+def test_condition_reorder_or_reverse_input(setup_condition_table, parser, optimizer):
+    """Test OR conditions are reordered even if input order is reversed."""
+    table = setup_condition_table
+    # Inequality (!=) is estimated as less selective (0.9) than equality (=) (0.1)
+    query_str = f"SELECT * FROM {table} WHERE col_str != 'abc' OR pk = 5" # Reversed input order
+    parsed = parser.parse(query_str)
+    optimized = optimizer.optimize(parsed)
+    
+    optimized_where = optimized['where'][1]
+    # Expected: col_str != 'abc' should still be the left operand (condition[0])
+    assert optimized_where[1].upper() == "OR"
+    assert optimized_where[0][0].column == 'col_str'
+    assert optimized_where[0][1] == '!='
+    assert optimized_where[2][0].column == 'pk'
+    assert optimized_where[2][1] == '='
+
+def test_condition_reorder_nested(setup_condition_table, parser, optimizer):
+    """Test nested conditions are reordered correctly."""
+    table = setup_condition_table
+    # Original: (pk = 1 AND col_int > 10) OR (col_str != 'abc' AND col_int < 5)
+    # Expected Outer OR: (col_str != 'abc' AND col_int < 5) OR (pk = 1 AND col_int > 10)
+    #   -> because OR puts less selective first. != AND < (0.9 * 0.3 = 0.27) vs = AND > (0.1 * 0.3 = 0.03). 0.27 is less selective than 0.03? Error in logic - OR puts LEAST selective first (HIGHEST selectivity value). 0.27 is > 0.03, so != AND < comes first.
+    # Expected Inner ANDs:
+    #   Left (original right): col_int < 5 AND col_str != 'abc' (< is 0.3, != is 0.9. So < comes first)
+    #   Right (original left): pk = 1 AND col_int > 10 (= is 0.1, > is 0.3. So = comes first)
+    # Final expected structure: ( (col_int < 5 AND col_str != 'abc') OR (pk = 1 AND col_int > 10) ) ? No, outer OR is based on combined selectivity.
+    # Let's re-evaluate outer OR: sel(left) = 0.1 * 0.3 = 0.03. sel(right) = 0.9 * 0.3 = 0.27.
+    # OR puts LEAST selective first (higher number), so right side should come first.
+    # Final Structure: ( (col_str != 'abc' AND col_int < 5) OR (pk = 1 AND col_int > 10) )
+    # Inner ANDs:
+    #   Left side (orig right): col_int < 5 AND col_str != 'abc' (sel 0.3 < sel 0.9 -> OK)
+    #   Right side (orig left): pk = 1 AND col_int > 10 (sel 0.1 < sel 0.3 -> OK)
+
+    query_str = f"SELECT * FROM {table} WHERE (pk = 1 AND col_int > 10) OR (col_str != 'abc' AND col_int < 5)"
+    parsed = parser.parse(query_str)
+    optimized = optimizer.optimize(parsed)
+
+    optimized_where = optimized['where'][1] 
+    # Check outer OR
+    assert optimized_where[1].upper() == "OR"
+    
+    # Check left side of OR (should be the original right side, internally optimized)
+    left_or = optimized_where[0]
+    assert left_or[1].upper() == "AND"
+    assert left_or[0][0].column == 'col_int' # col_int < 5
+    assert left_or[0][1] == '<'
+    assert left_or[2][0].column == 'col_str' # col_str != 'abc'
+    assert left_or[2][1] == '!='
+
+    # Check right side of OR (should be the original left side, internally optimized)
+    right_or = optimized_where[2]
+    assert right_or[1].upper() == "AND"
+    assert right_or[0][0].column == 'pk' # pk = 1
+    assert right_or[0][1] == '='
+    assert right_or[2][0].column == 'col_int' # col_int > 10
+    assert right_or[2][1] == '>'

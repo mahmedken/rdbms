@@ -2,12 +2,15 @@
 
 from typing import Dict, List, Tuple, Any, Set, Optional
 import math
+import os # Import os
+from pathlib import Path # Import Path
 from pyparsing import ParseResults
-from catalog import Catalog
+from catalog import Catalog, UnknownTableError
 
 class QueryOptimizer:
-    def __init__(self, catalog: Catalog):
+    def __init__(self, catalog: Catalog, data_dir: str):
         self.catalog = catalog
+        self.data_dir = Path(data_dir) # Store data_dir as Path
         
     def optimize(self, query):
         """Main entry point for query optimization"""
@@ -103,7 +106,7 @@ class QueryOptimizer:
             else:
                 condition[0] = left_opt
                 condition[2] = right_opt
-                
+        print(f"Optimized Condition: {condition}")
         return condition
     
     def _estimate_condition_selectivity(self, condition, tables):
@@ -148,19 +151,18 @@ class QueryOptimizer:
         
         # Calculate costs for both join methods
         nested_loop_cost = self._estimate_nested_loop_cost(left_table, right_table)
+        print(f"Nested Loop Cost: {nested_loop_cost}")
         sort_merge_cost = self._estimate_sort_merge_cost(left_table, right_table)
+        print(f"Sort Merge Cost: {sort_merge_cost}")
         
         # Choose the method with lower cost
         if nested_loop_cost <= sort_merge_cost:
+            print("Using Nested Loop")
             return "nested_loop"
         else:
+            print("Using Sort Merge")
             return "sort_merge"
     
-
-
-
-
-
 
     def _estimate_nested_loop_cost(self, left_table, right_table):
         """Estimate the cost of a nested-loop join"""
@@ -207,21 +209,47 @@ class QueryOptimizer:
 
 
 
-
-
-
-
-    
     def _estimate_table_size(self, table_name):
-        """Estimate the number of tuples in a table"""
+        """Estimate the number of tuples based on file size and schema."""
+        AVG_INT_BYTES = 5  # Rough estimate for avg JSON encoded int size
+        AVG_STR_BYTES = 15 # Rough estimate for avg JSON encoded str size
+        ROW_OVERHEAD_BYTES = 3 # Rough estimate for '[]\n'
+        DEFAULT_ESTIMATE = 100 # Fallback size
+        
         try:
-            # In a real implementation, you would get this from statistics
-            # For now, use a simple heuristic based on the table schema
             schema = self.catalog.get_schema(table_name)
-            # Assume each table has at least 100 tuples
-            return max(100, len(schema.columns) * 100)
-        except Exception:
-            return 100  # Default size if table not found
+            
+            # Estimate average row size
+            estimated_row_size = ROW_OVERHEAD_BYTES
+            for col in schema.columns:
+                if col.type == "INT":
+                    estimated_row_size += AVG_INT_BYTES
+                elif col.type == "STR":
+                    estimated_row_size += AVG_STR_BYTES
+                # Add other types if necessary
+            estimated_row_size = max(1, estimated_row_size) # Avoid division by zero
+
+            # Check file size
+            file_path = self.data_dir / f"{table_name}.dat"
+            if file_path.exists():
+                file_size = file_path.stat().st_size
+                if file_size > 0:
+                    estimated_rows = file_size / estimated_row_size
+                    # Return max(1, ...) to ensure we don't return 0 for tiny files
+                    return max(1, int(estimated_rows))
+                else:
+                    return 1 # File exists but is empty
+            else:
+                # File doesn't exist, maybe table just created?
+                return DEFAULT_ESTIMATE 
+                
+        except UnknownTableError:
+            # Schema not found in catalog
+            return DEFAULT_ESTIMATE
+        except Exception as e:
+            # Other errors (e.g., stat permission denied)
+            print(f"Warning: Error estimating size for table {table_name}: {e}")
+            return DEFAULT_ESTIMATE
     
     def _has_index(self, table_name):
         """Check if a table has any indexes"""

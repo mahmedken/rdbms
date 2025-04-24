@@ -59,7 +59,7 @@ class Executor:
     def __init__(self, catalog: Catalog, data_dir: str) -> None:
         self.catalog = catalog
         self.data_dir = data_dir
-        self.optimizer = QueryOptimizer(catalog)
+        self.optimizer = QueryOptimizer(catalog, data_dir)
 
         # DDL actions that DO NOT require a data‑flow plan
         self._ddl_dispatch = {
